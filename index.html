@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#070b10">
+<meta name="description" content="현대 병기 개발자가 중세로 회귀해 나쁜 군주의 대군을 막는 물량 디펜스 게임">
+<title>현대병기 · 중세회귀 디펜스</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="game" aria-label="전장"></canvas>
+
+<!-- ══════════ HUD ══════════ -->
+<div id="hud" class="hidden">
+  <div class="topbar">
+    <div class="wave-card glass">
+      <div class="wave-line">
+        <span class="tag">WAVE</span>
+        <b id="waveNum">1</b><span id="waveMax" class="dimtext">/ 15</span>
+        <span id="wavePhase" class="phase">준비</span>
+      </div>
+      <div class="progress"><i id="waveProgress"></i></div>
+      <div id="wavePreview" class="preview"></div>
+    </div>
+
+    <div class="village-card glass">
+      <div class="village-head">
+        <span class="v-label">🏰 마을 방어선</span>
+        <b id="hpText">3000</b>
+      </div>
+      <div class="progress hp"><i id="hpBar"></i></div>
+      <div class="village-sub">
+        <span id="gateState">성벽 안정</span>
+        <button id="btnRepairWall" class="mini">긴급 수리 <em id="repairCost">60</em></button>
+      </div>
+    </div>
+
+    <div class="res-card">
+      <div class="res" title="골드 — 포탑·방어벽 건설과 강화"><span class="r-ico">🪙</span><b id="gold">0</b></div>
+      <div class="res" title="고철 — 무기 강화"><span class="r-ico">⚙️</span><b id="scrap">0</b></div>
+      <div class="res" title="설계도 — 영구 연구소 재화"><span class="r-ico">📘</span><b id="rp">0</b></div>
+      <div class="speed-ctrl">
+        <button id="btnSpeed" class="icon-btn" title="배속 (Space 아님, S)">1×</button>
+        <button id="btnPause" class="icon-btn" title="일시정지 (Esc)">Ⅱ</button>
+        <button id="btnSettings" class="icon-btn" title="설정">⚙</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="bossBar" class="boss-bar hidden">
+    <span id="bossName">악덕 군주</span>
+    <div class="progress"><i id="bossFill"></i></div>
+  </div>
+
+  <div id="banner" class="banner"><div class="banner-inner">
+    <small id="bannerSub"></small>
+    <strong id="bannerTitle"></strong>
+  </div></div>
+
+  <div id="combo" class="combo"></div>
+  <div id="toast" class="toast"></div>
+
+  <div class="move-btns">
+    <button id="moveLeft" class="move-btn" aria-label="왼쪽으로">◀</button>
+    <button id="moveRight" class="move-btn" aria-label="오른쪽으로">▶</button>
+  </div>
+
+  <div id="dock" class="dock glass">
+    <div class="dock-row build-row">
+      <div class="build-group">
+        <button class="build-btn" data-build="sentry">
+          <span class="b-ico">🎯</span><span class="b-name">센트리</span><span class="b-cost">110</span>
+        </button>
+        <button class="build-btn" data-build="flame">
+          <span class="b-ico">🔥</span><span class="b-name">화염포탑</span><span class="b-cost">190</span>
+        </button>
+        <button class="build-btn" data-build="mortar">
+          <span class="b-ico">💥</span><span class="b-name">박격포</span><span class="b-cost">270</span>
+        </button>
+        <button class="build-btn locked hidden" data-build="rail">
+          <span class="b-ico">⚡</span><span class="b-name">레일포탑</span><span class="b-cost">320</span>
+        </button>
+        <button class="build-btn" data-build="barricade">
+          <span class="b-ico">🧱</span><span class="b-name">바리케이드</span><span class="b-cost">55</span>
+        </button>
+        <button class="build-btn" data-build="repair">
+          <span class="b-ico">🔧</span><span class="b-name">수리</span><span class="b-cost">30</span>
+        </button>
+      </div>
+      <div class="dock-spacer"></div>
+      <button id="btnUpgrade" class="dock-btn">무기 강화</button>
+      <button id="btnNextWave" class="dock-btn primary">다음 웨이브 <span id="nextTimer"></span></button>
+    </div>
+    <div class="dock-row weapon-row">
+      <div id="weaponSlots" class="slots"></div>
+      <div class="skill-group">
+        <button class="skill-btn" data-skill="grenade" title="수류탄 (Q)">
+          <span class="s-ico">💣</span><span class="s-name">수류탄</span><i class="cd"></i>
+        </button>
+        <button class="skill-btn" data-skill="airstrike" title="집속 포격 (E)">
+          <span class="s-ico">🚀</span><span class="s-name">집속포격</span><i class="cd"></i>
+        </button>
+        <button id="btnAutoAim" class="skill-btn toggle" title="자동 조준 (F)">
+          <span class="s-ico">🎯</span><span class="s-name">자동조준</span>
+        </button>
+      </div>
+    </div>
+    <div class="reload-strip"><i id="reloadStrip"></i></div>
+  </div>
+</div>
+
+<!-- ══════════ MENU ══════════ -->
+<div id="menu" class="screen">
+  <div class="menu-shade"></div>
+  <div class="menu-content">
+    <div class="eyebrow">MODERN ARMORY · YEAR 1377</div>
+    <h1>현대병기<span class="h1-accent">중세회귀</span><em>디펜스</em></h1>
+    <p class="tagline">중세로 떨어진 병기 개발자,<br><b>나쁜 군주의 대군</b>을 현대 화력으로 막아라.</p>
+    <div class="menu-buttons">
+      <button id="btnStart" class="btn primary big">⚔️ 전투 시작</button>
+      <button id="btnLab" class="btn">📘 연구소 <span id="menuRp" class="badge">0</span></button>
+      <button id="btnHow" class="btn ghost">❓ 조작법</button>
+      <button id="btnSettings2" class="btn ghost">⚙ 설정</button>
+    </div>
+    <div class="menu-stats">
+      <span>최고 웨이브 <b id="menuBest">0</b></span>
+      <span class="dot">·</span>
+      <span>해금 무기 <b id="menuWeapons">1 / 9</b></span>
+      <span class="dot">·</span>
+      <span>무기 강화 <b id="menuPerks">Lv.0</b></span>
+    </div>
+    <div class="menu-foot">마우스·터치로 조준 사격 · WASD/화살표 이동 · 숫자키 무기 교체</div>
+  </div>
+</div>
+
+<!-- ══════════ MODAL ══════════ -->
+<div id="modalRoot" class="modal-root hidden">
+  <div class="modal-backdrop"></div>
+  <div id="modalCard" class="modal-card"></div>
+</div>
+
+<script src="js/data.js"></script>
+<script src="js/save.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/game.js"></script>
+<script src="js/render.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
