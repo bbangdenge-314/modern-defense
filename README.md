@@ -102,6 +102,11 @@
 
 ---
 
+## 배포
+
+GitHub Pages(브랜치 `main`, 루트)로 배포됩니다. 최초 1회는 저장소 **Settings → Pages**에서
+Source를 `Deploy from a branch`, Branch를 `main` / `/ (root)`로 지정해야 위 주소가 열립니다.
+
 ## 로컬 실행
 
 빌드 과정이 없는 정적 사이트입니다. 폴더를 그대로 열거나 로컬 서버로 실행하세요.
