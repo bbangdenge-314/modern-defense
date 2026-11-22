@@ -1259,12 +1259,12 @@ window.Render = (function () {
       ctx.drawImage(fs.c, -fs.ox, -fs.oy, 70, 80);
       ctx.restore();
     }
-    // 체력바(보스/큰 적)
-    if (e.def.boss || e.hpMax > 800) {
-      const w = 40 * sc, h = 3.5 * sc;
-      ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(sx - w / 2, sy - 46 * sc, w, h);
+    // 체력바(보스·공성 병기만, 피해를 입었을 때)
+    if ((e.def.boss || e.def.siege || e.type === 'knight') && e.hp < e.hpMax) {
+      const w = 26 * sc, h = 2.6 * sc;
+      ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(sx - w / 2, sy - 42 * sc, w, h);
       ctx.fillStyle = e.def.boss ? '#ff5f6d' : '#ffb74d';
-      ctx.fillRect(sx - w / 2, sy - 46 * sc, w * Math.max(0, e.hp / e.hpMax), h);
+      ctx.fillRect(sx - w / 2, sy - 42 * sc, w * Math.max(0, e.hp / e.hpMax), h);
     }
   }
 
