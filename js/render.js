@@ -1254,7 +1254,7 @@ window.Render = (function () {
     ctx.restore();
     if (e.hurt > 0) {
       const fs = enemySprite(e.type, frame, true);
-      ctx.save(); ctx.globalAlpha = Math.min(0.85, e.hurt * 6);
+      ctx.save(); ctx.globalAlpha = Math.min(0.5, e.hurt * 5);
       ctx.translate(sx, sy); ctx.scale(e.flip * sc, sc);
       ctx.drawImage(fs.c, -fs.ox, -fs.oy, 70, 80);
       ctx.restore();
