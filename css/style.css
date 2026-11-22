@@ -246,7 +246,7 @@ small { color: var(--dim); }
 .lobby-foot { display: flex; gap: 20px; justify-content: center; margin-top: 26px; font-size: 10px; color: #6c7d88; flex-wrap: wrap; }
 
 /* ───────── Modal ───────── */
-.modal { background: rgba(3, 5, 8, .72); backdrop-filter: blur(6px); z-index: 55; padding: 16px; }
+.modal { background: rgba(3, 5, 8, .72); backdrop-filter: blur(6px); z-index: 70; padding: 16px; }
 .modal.hidden { display: none !important; }
 .modal-box {
   width: min(1000px, 96vw); max-height: 92vh; background: linear-gradient(180deg, #131a21, #0b1015);
