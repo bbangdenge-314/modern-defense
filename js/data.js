@@ -362,10 +362,10 @@ window.DATA = (function () {
   /* ───────────────────────── 스테이지 ───────────────────────── */
   const WAVES_PER_STAGE = 8;
   const STAGE_UNLOCK = {
-    1: ['peasant', 'spearman', 'shield'],
-    2: ['peasant', 'spearman', 'shield', 'archer', 'cavalry'],
-    3: ['peasant', 'spearman', 'shield', 'archer', 'cavalry', 'ram', 'berserker'],
-    4: ['peasant', 'spearman', 'shield', 'archer', 'cavalry', 'ram', 'berserker', 'catapult', 'knight'],
+    1: ['peasant', 'spearman', 'shield', 'lord'],
+    2: ['peasant', 'spearman', 'shield', 'archer', 'cavalry', 'lord'],
+    3: ['peasant', 'spearman', 'shield', 'archer', 'cavalry', 'ram', 'berserker', 'lord'],
+    4: ['peasant', 'spearman', 'shield', 'archer', 'cavalry', 'ram', 'berserker', 'catapult', 'knight', 'lord'],
     5: ['peasant', 'spearman', 'shield', 'archer', 'cavalry', 'ram', 'berserker', 'catapult', 'knight', 'siege', 'lord'],
   };
   for (let s = 6; s <= 40; s++) STAGE_UNLOCK[s] = STAGE_UNLOCK[5];
