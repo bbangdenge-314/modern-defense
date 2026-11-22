@@ -57,7 +57,7 @@ window.Render = (function () {
   }
   function baseZoom() {
     const s = settings();
-    const mul = vw < 720 ? 0.52 : vw < 1100 ? 0.9 : 1;
+    const mul = vw < 720 ? 0.46 : vw < 1100 ? 0.9 : 1;
     return Math.max(0.3, s.zoomBase * mul);
   }
   function setCenter(x, y) { cam.x = x; cam.y = y; clampCam(); }
