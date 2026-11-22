@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#070b10">
-<meta name="description" content="현대 병기 개발자가 중세로 회귀해 나쁜 군주의 대군을 막는 물량 디펜스 게임">
-<title>현대병기 · 중세회귀 디펜스</title>
-<link rel="stylesheet" href="css/style.css">
+<meta name="theme-color" content="#080b0f">
+<meta name="description" content="현대 병기로 중세 마을을 지키는 쿼터뷰 물량 디펜스 — 기술 트리·재회귀·고대 유물">
+<title>현대병기 · 중세 방어전</title>
+<link rel="stylesheet" href="css/style.css?v=2">
+<script>window.__errlog=[];window.addEventListener('error',function(e){window.__errlog.push((e.message||'err')+' @'+(e.filename||'')+':'+(e.lineno||0));});window.addEventListener('unhandledrejection',function(e){window.__errlog.push('promise:'+e.reason);});</script>
 </head>
 <body>
 <canvas id="game" aria-label="전장"></canvas>
@@ -14,43 +15,56 @@
 <!-- ══════════ HUD ══════════ -->
 <div id="hud" class="hidden">
   <div class="topbar">
-    <div class="wave-card glass">
-      <div class="wave-line">
-        <span class="tag">WAVE</span>
-        <b id="waveNum">1</b><span id="waveMax" class="dimtext">/ 15</span>
-        <span id="wavePhase" class="phase">준비</span>
+    <div class="card wave-card">
+      <div class="wave-title">
+        <span class="stage-chip" id="stageLabel">STAGE 1</span>
+        <span class="wave-num">WAVE <b id="waveNum">1</b><em id="waveOf">/8</em></span>
+        <span class="phase-chip" id="phaseLabel">준비</span>
       </div>
-      <div class="progress"><i id="waveProgress"></i></div>
-      <div id="wavePreview" class="preview"></div>
-    </div>
-
-    <div class="village-card glass">
-      <div class="village-head">
-        <span class="v-label">🏰 마을 방어선</span>
-        <b id="hpText">3000</b>
-      </div>
-      <div class="progress hp"><i id="hpBar"></i></div>
-      <div class="village-sub">
-        <span id="gateState">성벽 안정</span>
-        <button id="btnRepairWall" class="mini">긴급 수리 <em id="repairCost">60</em></button>
+      <div class="bar thin"><i id="waveBar"></i></div>
+      <div class="wave-sub">
+        <span id="waveEnemy">적 0</span>
+        <span id="waveTimer">--</span>
+        <span id="wavePreview" class="preview"></span>
       </div>
     </div>
 
-    <div class="res-card">
-      <div class="res" title="골드 — 포탑·방어벽 건설과 강화"><span class="r-ico">🪙</span><b id="gold">0</b></div>
-      <div class="res" title="고철 — 무기 강화"><span class="r-ico">⚙️</span><b id="scrap">0</b></div>
-      <div class="res" title="설계도 — 영구 연구소 재화"><span class="r-ico">📘</span><b id="rp">0</b></div>
-      <div class="speed-ctrl">
-        <button id="btnSpeed" class="icon-btn" title="배속 (Space 아님, S)">1×</button>
-        <button id="btnPause" class="icon-btn" title="일시정지 (Esc)">Ⅱ</button>
-        <button id="btnSettings" class="icon-btn" title="설정">⚙</button>
+    <div class="card res-card">
+      <div class="res" title="골드 — 포탑 건설·강화"><span>🪙</span><b id="gold">0</b></div>
+      <div class="res" title="연구 포인트 — 기술 트리"><span>📘</span><b id="rp">0</b></div>
+      <div class="res shard" title="회귀석 — 영구 강화"><span>💎</span><b id="shards">0</b></div>
+    </div>
+
+    <div class="card base-card">
+      <div class="base-line">
+        <span>🏯 기지</span>
+        <div class="bar hp"><i id="keepBar"></i></div>
+        <b id="keepHpText">0</b>
       </div>
+      <div class="base-line">
+        <span>🧱 성벽</span>
+        <div class="bar wall"><i id="wallBar"></i></div>
+        <b id="wallText">100%</b>
+      </div>
+      <div class="base-actions">
+        <button id="btnRepairWall" class="mini">긴급 수리 <em id="repairCost">0</em>🪙</button>
+        <span id="breachLabel"></span>
+      </div>
+    </div>
+
+    <div class="ctrl">
+      <button id="btnResearch" class="icon-btn wide" title="기술 트리 (T)"><span>🔬</span><em>연구</em></button>
+      <button id="btnPrestige" class="icon-btn wide" title="재회귀 (P)"><span>🔮</span><em>재회귀</em></button>
+      <button id="btnCodex" class="icon-btn wide" title="고대 유물 도감"><span>🏺</span><em>유물</em></button>
+      <button id="btnOptions" class="icon-btn" title="옵션">⚙</button>
+      <button id="btnSpeed" class="icon-btn" title="배속 (1~4)">1×</button>
+      <button id="btnPause" class="icon-btn" title="일시정지 (Space)">❚❚</button>
     </div>
   </div>
 
   <div id="bossBar" class="boss-bar hidden">
     <span id="bossName">악덕 군주</span>
-    <div class="progress"><i id="bossFill"></i></div>
+    <div class="bar"><i id="bossFill"></i></div>
   </div>
 
   <div id="banner" class="banner"><div class="banner-inner">
@@ -58,94 +72,347 @@
     <strong id="bannerTitle"></strong>
   </div></div>
 
-  <div id="combo" class="combo"></div>
+  <div id="relicDrop" class="relic-drop hidden">
+    <div class="relic-glow"></div>
+    <div class="relic-icon" id="relicDropIcon">🏺</div>
+    <div class="relic-meta">
+      <small id="relicDropRarity">일반</small>
+      <strong id="relicDropName">고대 유물</strong>
+      <span id="relicDropEffect"></span>
+    </div>
+  </div>
+
+  <div id="zoomCtrl">
+    <button id="btnZoomIn" title="확대">＋</button>
+    <button id="btnZoomOut" title="축소">－</button>
+    <button id="btnRecenter" title="마을로">⌂</button>
+  </div>
+
+  <div id="minimapWrap">
+    <canvas id="minimap" width="176" height="176"></canvas>
+    <div class="minimap-legend"><span class="lg you"></span>마을 <span class="lg enemy"></span>적 <span class="lg tower"></span>포탑</div>
+  </div>
+
   <div id="toast" class="toast"></div>
 
-  <div class="move-btns">
-    <button id="moveLeft" class="move-btn" aria-label="왼쪽으로">◀</button>
-    <button id="moveRight" class="move-btn" aria-label="오른쪽으로">▶</button>
-  </div>
-
-  <div id="dock" class="dock glass">
-    <div class="dock-row build-row">
-      <div class="build-group">
-        <button class="build-btn" data-build="sentry">
-          <span class="b-ico">🎯</span><span class="b-name">센트리</span><span class="b-cost">110</span>
-        </button>
-        <button class="build-btn" data-build="flame">
-          <span class="b-ico">🔥</span><span class="b-name">화염포탑</span><span class="b-cost">190</span>
-        </button>
-        <button class="build-btn" data-build="mortar">
-          <span class="b-ico">💥</span><span class="b-name">박격포</span><span class="b-cost">270</span>
-        </button>
-        <button class="build-btn locked hidden" data-build="rail">
-          <span class="b-ico">⚡</span><span class="b-name">레일포탑</span><span class="b-cost">320</span>
-        </button>
-        <button class="build-btn" data-build="barricade">
-          <span class="b-ico">🧱</span><span class="b-name">바리케이드</span><span class="b-cost">55</span>
-        </button>
-        <button class="build-btn" data-build="repair">
-          <span class="b-ico">🔧</span><span class="b-name">수리</span><span class="b-cost">30</span>
-        </button>
+  <div id="dock">
+    <div id="towerPanel" class="tower-panel hidden">
+      <div class="tp-head">
+        <span id="tpName">포탑</span>
+        <b id="tpLevel">Lv 1</b>
+        <button id="tpClose" class="x-btn">✕</button>
       </div>
-      <div class="dock-spacer"></div>
-      <button id="btnUpgrade" class="dock-btn">무기 강화</button>
-      <button id="btnNextWave" class="dock-btn primary">다음 웨이브 <span id="nextTimer"></span></button>
-    </div>
-    <div class="dock-row weapon-row">
-      <div id="weaponSlots" class="slots"></div>
-      <div class="skill-group">
-        <button class="skill-btn" data-skill="grenade" title="수류탄 (Q)">
-          <span class="s-ico">💣</span><span class="s-name">수류탄</span><i class="cd"></i>
-        </button>
-        <button class="skill-btn" data-skill="airstrike" title="집속 포격 (E)">
-          <span class="s-ico">🚀</span><span class="s-name">집속포격</span><i class="cd"></i>
-        </button>
-        <button id="btnAutoAim" class="skill-btn toggle" title="자동 조준 (F)">
-          <span class="s-ico">🎯</span><span class="s-name">자동조준</span>
-        </button>
+      <div class="tp-stats" id="tpStats"></div>
+      <div class="tp-actions">
+        <button id="tpUpgrade" class="btn primary">강화 <em>0</em>🪙</button>
+        <button id="tpSell" class="btn ghost">철거 <em>0</em>🪙</button>
       </div>
     </div>
-    <div class="reload-strip"><i id="reloadStrip"></i></div>
+
+    <div id="padPanel" class="tower-panel hidden">
+      <div class="tp-head">
+        <span>방어 슬롯</span>
+        <button id="padClose" class="x-btn">✕</button>
+      </div>
+      <div id="padList" class="pad-list"></div>
+    </div>
+
+    <div class="dock-row">
+      <button id="btnPrep" class="start-wave">
+        <span id="prepLabel">웨이브 시작</span>
+        <em id="prepSub">준비 20초</em>
+      </button>
+      <div id="buildBar" class="build-bar"></div>
+    </div>
   </div>
 </div>
 
-<!-- ══════════ MENU ══════════ -->
-<div id="menu" class="screen">
-  <div class="menu-shade"></div>
-  <div class="menu-content">
-    <div class="eyebrow">MODERN ARMORY · YEAR 1377</div>
-    <h1>현대병기<span class="h1-accent">중세회귀</span><em>디펜스</em></h1>
-    <p class="tagline">중세로 떨어진 병기 개발자,<br><b>나쁜 군주의 대군</b>을 현대 화력으로 막아라.</p>
-    <div class="menu-buttons">
-      <button id="btnStart" class="btn primary big">⚔️ 전투 시작</button>
-      <button id="btnLab" class="btn">📘 연구소 <span id="menuRp" class="badge">0</span></button>
-      <button id="btnHow" class="btn ghost">❓ 조작법</button>
-      <button id="btnSettings2" class="btn ghost">⚙ 설정</button>
+<!-- ══════════ 로비 ══════════ -->
+<div id="lobby" class="overlay lobby">
+  <div class="lobby-inner">
+    <div class="lobby-top">
+      <span class="kicker">ISOMETRIC MASS DEFENSE</span>
+      <h1>현대병기 <span>·</span> 중세 방어전</h1>
+      <p class="tagline">중세로 회귀한 병기 개발자가, 마을에 현대 화력을 세운다.<br>
+        <em>“마법이 아니라 열역학 제2법칙입니다.”</em></p>
     </div>
-    <div class="menu-stats">
-      <span>최고 웨이브 <b id="menuBest">0</b></span>
-      <span class="dot">·</span>
-      <span>해금 무기 <b id="menuWeapons">1 / 9</b></span>
-      <span class="dot">·</span>
-      <span>무기 강화 <b id="menuPerks">Lv.0</b></span>
+    <div class="lobby-stats">
+      <div><small>최고 웨이브</small><b id="lobbyBest">0</b></div>
+      <div><small>최고 스테이지</small><b id="lobbyStage">1</b></div>
+      <div><small>회귀석</small><b id="lobbyShards">0</b></div>
+      <div><small>유물</small><b id="lobbyRelics">0/26</b></div>
     </div>
-    <div class="menu-foot">마우스·터치로 조준 사격 · WASD/화살표 이동 · 숫자키 무기 교체</div>
+    <div class="lobby-actions">
+      <button id="btnStart" class="btn huge primary">방어전 시작</button>
+      <button id="btnContinue" class="btn huge ghost hidden">이어하기</button>
+      <div class="lobby-row">
+        <button id="btnStory" class="btn ghost">스토리 다시보기</button>
+        <button id="btnTechLobby" class="btn ghost">기술 트리</button>
+        <button id="btnPrestigeLobby" class="btn ghost">재회귀</button>
+        <button id="btnCodexLobby" class="btn ghost">유물 도감</button>
+        <button id="btnOptionsLobby" class="btn ghost">⚙ 옵션</button>
+      </div>
+      <div class="lobby-row small">
+        <button id="btnStageSelect" class="btn ghost tiny">스테이지 선택</button>
+        <span id="verBadge" class="ver-badge">v1.0.0 · 쿼터뷰 리메이크</span>
+      </div>
+    </div>
+    <div class="lobby-foot">
+      <span>PC: 드래그 이동 · 휠 줌 · 1~4 배속 · Space 일시정지</span>
+      <span>모바일: 한 손가락 이동 · 두 손가락 줌 · 탭 배치</span>
+    </div>
   </div>
 </div>
 
-<!-- ══════════ MODAL ══════════ -->
-<div id="modalRoot" class="modal-root hidden">
-  <div class="modal-backdrop"></div>
-  <div id="modalCard" class="modal-card"></div>
+<!-- ══════════ 기술 트리 ══════════ -->
+<div id="techModal" class="overlay modal hidden">
+  <div class="modal-box tech-box">
+    <div class="modal-head">
+      <h2>🔬 기술 트리 <small>일반 연구 — 재회귀 시 초기화</small></h2>
+      <div class="modal-head-right">
+        <span class="rp-badge">📘 <b id="techRp">0</b></span>
+        <button class="x-btn" data-close>✕</button>
+      </div>
+    </div>
+    <div class="tech-tabs" id="techTabs"></div>
+    <div class="tech-body">
+      <div class="tech-scroll" id="techScroll">
+        <div class="tech-canvas" id="techCanvas">
+          <svg class="tech-lines" id="techLines"></svg>
+          <div class="tech-nodes" id="techNodes"></div>
+        </div>
+      </div>
+      <div class="tech-info" id="techInfo">
+        <div class="ti-empty">노드를 선택하면 상세 효과와 선행 조건이 표시됩니다.</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="hint">노드를 드래그해 이동 · 스크롤로 탐색</span>
+      <button class="btn ghost small" id="techResetView">화면 맞춤</button>
+    </div>
+  </div>
 </div>
 
-<script src="js/data.js"></script>
-<script src="js/save.js"></script>
-<script src="js/audio.js"></script>
-<script src="js/game.js"></script>
-<script src="js/render.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/main.js"></script>
+<!-- ══════════ 재회귀 ══════════ -->
+<div id="prestigeModal" class="overlay modal hidden">
+  <div class="modal-box prestige-box">
+    <div class="modal-head">
+      <h2>🔮 재회귀 <small>이번 회차를 되돌리고 회귀석으로 영구 강화</small></h2>
+      <div class="modal-head-right">
+        <span class="shard-badge">💎 <b id="prestigeShards">0</b></span>
+        <button class="x-btn" data-close>✕</button>
+      </div>
+    </div>
+    <div class="prestige-summary">
+      <div class="ps-item"><small>이번 최고 웨이브</small><b id="psWave">0</b></div>
+      <div class="ps-item"><small>정산 회귀석</small><b id="psGain">0</b></div>
+      <div class="ps-item"><small>누적 처치</small><b id="psKills">0</b></div>
+      <div class="ps-item"><small>초기화</small><span>골드 · 포탑 · 일반 연구</span></div>
+    </div>
+    <div class="prestige-cats" id="prestigeCats"></div>
+    <div class="prestige-list" id="prestigeList"></div>
+    <div class="modal-foot">
+      <span class="hint" id="prestigeHint">스테이지 1을 클리어하면 재회귀할 수 있습니다.</span>
+      <button id="btnDoPrestige" class="btn primary">재회귀 실행</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 유물 도감 ══════════ -->
+<div id="codexModal" class="overlay modal hidden">
+  <div class="modal-box codex-box">
+    <div class="modal-head">
+      <h2>🏺 고대 유물 도감 <small>재회귀해도 영구 보존</small></h2>
+      <div class="modal-head-right">
+        <span class="relic-count" id="codexCount">0 / 26</span>
+        <button class="x-btn" data-close>✕</button>
+      </div>
+    </div>
+    <div class="codex-grid" id="codexGrid"></div>
+    <div class="modal-foot"><span class="hint">유물은 적 처치 시 아주 낮은 확률로 드롭됩니다. 중복 획득 시 회귀석으로 변환됩니다.</span></div>
+  </div>
+</div>
+
+<!-- ══════════ 스토리 다시보기 ══════════ -->
+<div id="storyModal" class="overlay modal hidden">
+  <div class="modal-box story-box">
+    <div class="modal-head">
+      <h2>🎬 스토리 다시보기</h2>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <div class="story-list" id="storyList"></div>
+    <div class="modal-foot"><span class="hint">컷신은 언제든 건너뛸 수 있습니다. 옵션에서 자동 재생을 끌 수 있습니다.</span></div>
+  </div>
+</div>
+
+<!-- ══════════ 옵션 ══════════ -->
+<div id="optionsModal" class="overlay modal hidden">
+  <div class="modal-box options-box">
+    <div class="modal-head">
+      <h2>⚙ 옵션</h2>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <div class="opt-group">
+      <h3>화면 · 전장</h3>
+      <div class="opt-row">
+        <label>유닛·건물 크기</label>
+        <div class="seg" id="optUnitScale" data-key="unitScale">
+          <button data-v="0.7">작게</button><button data-v="0.82">보통</button><button data-v="1">크게</button><button data-v="1.2">아주 크게</button>
+        </div>
+      </div>
+      <div class="opt-row">
+        <label>기본 카메라 줌</label>
+        <div class="seg" id="optZoom" data-key="zoomBase">
+          <button data-v="0.58">넓게</button><button data-v="0.78">보통</button><button data-v="1.05">가깝게</button>
+        </div>
+      </div>
+      <div class="opt-row">
+        <label>이펙트·잔해 밀도</label>
+        <div class="seg" id="optFx" data-key="effects">
+          <button data-v="high">최대</button><button data-v="normal">보통</button><button data-v="low">가볍게</button>
+        </div>
+      </div>
+      <div class="opt-row">
+        <label>데미지 숫자</label>
+        <div class="seg" id="optDmg" data-key="dmgNumbers"><button data-v="1">표시</button><button data-v="0">숨김</button></div>
+      </div>
+    </div>
+    <div class="opt-group">
+      <h3>연출 · 소리</h3>
+      <div class="opt-row">
+        <label>화면 흔들림</label>
+        <div class="seg" id="optShake" data-key="shake"><button data-v="1">켜짐</button><button data-v="0">꺼짐</button></div>
+      </div>
+      <div class="opt-row">
+        <label>효과음</label>
+        <div class="seg" id="optSound" data-key="sound"><button data-v="1">켜짐</button><button data-v="0">꺼짐</button></div>
+      </div>
+      <div class="opt-row">
+        <label>컷신 자동 재생</label>
+        <div class="seg" id="optCutscene" data-key="cutscene"><button data-v="1">켜짐</button><button data-v="0">꺼짐</button></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="hint">옵션은 자동 저장됩니다. 카메라 줌은 전투 중에도 휠·핀치로 조절할 수 있습니다.</span>
+      <button id="btnResetSave" class="btn ghost small danger">저장 초기화</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 스테이지 선택 ══════════ -->
+<div id="stageModal" class="overlay modal hidden">
+  <div class="modal-box stage-box">
+    <div class="modal-head">
+      <h2>🗺 스테이지 선택</h2>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <p class="modal-desc">클리어한 스테이지는 다시 도전할 수 있습니다. 새 스테이지에서 시작하면 적이 더 강해집니다.</p>
+    <div class="stage-grid" id="stageGrid"></div>
+  </div>
+</div>
+
+<!-- ══════════ 스테이지 클리어 ══════════ -->
+<div id="stageClearModal" class="overlay modal hidden">
+  <div class="modal-box stageclear-box">
+    <div class="sc-emblem">🏆</div>
+    <h2 id="scTitle">STAGE 1 클리어</h2>
+    <p id="scSub">변경의 들판을 지켜냈습니다.</p>
+    <div class="sc-rewards">
+      <div><span>🪙</span><b id="scGold">0</b></div>
+      <div><span>📘</span><b id="scRp">0</b></div>
+      <div><span>💎</span><b id="scShards">0</b></div>
+    </div>
+    <div class="sc-actions">
+      <button id="btnNextStage" class="btn primary">다음 스테이지 ▶</button>
+      <button id="btnStagePrestige" class="btn ghost">재회귀</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 패배 ══════════ -->
+<div id="defeatModal" class="overlay modal hidden">
+  <div class="modal-box defeat-box">
+    <div class="sc-emblem">💀</div>
+    <h2>마을이 함락되었습니다</h2>
+    <p id="defeatSub">Stage 1 · Wave 4</p>
+    <div class="sc-rewards">
+      <div><span>☠</span><b id="dfKills">0</b></div>
+      <div><span>💎</span><b id="dfShards">0</b></div>
+    </div>
+    <div class="sc-actions">
+      <button id="btnRetry" class="btn primary">다시 도전</button>
+      <button id="btnDefeatPrestige" class="btn ghost">재회귀</button>
+      <button id="btnToLobby" class="btn ghost">로비로</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ 숨겨진 치트 ══════════ -->
+<div id="cheatModal" class="overlay modal hidden">
+  <div class="modal-box cheat-box">
+    <div class="modal-head">
+      <h2>🛠 숨겨진 개발자 패널</h2>
+      <button class="x-btn" data-close>✕</button>
+    </div>
+    <div class="cheat-grid">
+      <div class="cheat-sec">
+        <h3>재화</h3>
+        <div class="cheat-row"><label>골드</label><input id="cheatGold" type="number"><button data-cheat="gold">적용</button><button data-cheat="goldAdd">+10만</button></div>
+        <div class="cheat-row"><label>연구 포인트</label><input id="cheatRp" type="number"><button data-cheat="rp">적용</button><button data-cheat="rpAdd">+1만</button></div>
+        <div class="cheat-row"><label>회귀석</label><input id="cheatShards" type="number"><button data-cheat="shards">적용</button><button data-cheat="shardsAdd">+1천</button></div>
+      </div>
+      <div class="cheat-sec">
+        <h3>진행</h3>
+        <div class="cheat-row"><label>웨이브</label><button data-cheat="wave1">+1</button><button data-cheat="wave5">+5</button><button data-cheat="waveSkip">스테이지 끝으로</button></div>
+        <div class="cheat-row"><label>스테이지</label><button data-cheat="stage1">+1</button><button data-cheat="stage5">+5</button></div>
+        <div class="cheat-row"><label>전투</label><button data-cheat="killAll">모두 처치</button><button data-cheat="invincible">기지 무적</button><button data-cheat="win">즉시 클리어</button></div>
+        <div class="cheat-row"><label>연구</label><button data-cheat="unlockAll">전체 해금</button><button data-cheat="clearResearch">연구 초기화</button></div>
+      </div>
+      <div class="cheat-sec">
+        <h3>유물 테스트</h3>
+        <div class="cheat-row"><label>드롭</label><button data-cheat="relicDrop">강제 드롭</button><button data-cheat="relicAll">전체 지급</button></div>
+        <div class="cheat-row"><label>확률 배율</label>
+          <div class="seg small" id="cheatRelicBoost">
+            <button data-v="1">원래</button><button data-v="50">×50</button><button data-v="500">×500</button><button data-v="5000">×5000</button>
+          </div>
+        </div>
+        <div class="cheat-row"><label>특정 지급</label><select id="cheatRelicPick"></select><button data-cheat="relicPick">지급</button></div>
+      </div>
+    </div>
+    <div class="modal-foot"><span class="hint">이 패널은 로비 버전 배지를 5회 탭하거나 Ctrl+Shift+C 로 열 수 있습니다.</span></div>
+  </div>
+</div>
+
+<!-- ══════════ 컷신 ══════════ -->
+<div id="cutscene" class="cutscene hidden">
+  <canvas id="csCanvas"></canvas>
+  <div class="cs-grade"></div>
+  <div class="cs-letterbox top"></div>
+  <div class="cs-letterbox bottom"></div>
+  <div class="cs-scene-title"><span id="csSceneTitle"></span></div>
+  <div class="cs-flash" id="csFlash"></div>
+  <div class="cs-dialogue">
+    <div class="cs-portrait-wrap"><canvas id="csPortrait" width="152" height="152"></canvas></div>
+    <div class="cs-body">
+      <div class="cs-speaker" id="csSpeaker"></div>
+      <div class="cs-text" id="csText"></div>
+    </div>
+  </div>
+  <div class="cs-progress" id="csProgress"></div>
+  <div class="cs-controls">
+    <button id="csSkip" class="cs-btn ghost">건너뛰기</button>
+    <button id="csNext" class="cs-btn">다음 ▶</button>
+  </div>
+</div>
+
+<div id="rotateHint" class="rotate-hint hidden">가로 화면에서 더 넓게 즐길 수 있습니다.</div>
+
+<script src="js/data.js?v=2"></script>
+<script src="js/audio.js?v=2"></script>
+<script src="js/game.js?v=2"></script>
+<script src="js/render.js?v=2"></script>
+<script src="js/cutscene.js?v=2"></script>
+<script src="js/ui.js?v=2"></script>
+<script src="js/main.js?v=2"></script>
 </body>
 </html>

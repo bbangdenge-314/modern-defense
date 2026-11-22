@@ -1,795 +1,998 @@
-/* ─────────────────────────────────────────────
-   ui.js — HUD·메뉴·연구소·모달
-   ───────────────────────────────────────────── */
-'use strict';
+/* 현대병기 · 중세 방어전 — HUD / 모달 / 트리 UI */
+window.UI = (function () {
+  'use strict';
+  const D = window.DATA;
+  const G = window.Game;
+  const S = G.S;
+  const $ = id => document.getElementById(id);
+  const el = {};
+  let buildType = null, selTower = null, selPad = -1;
+  let activeTechCat = 'gun', activeTechNode = null;
+  let activePrestigeCat = 'economy';
+  let toastTimer = 0, bannerTimer = 0, relicTimer = 0;
+  let lastHud = 0, minimapTick = 0;
+  let cheatOpenCount = 0, cheatClickTimer = 0;
+  let confirmCb = null;
+  let modalPaused = false;
+  function refreshModalPause() {
+    const open = document.querySelectorAll('.overlay.modal:not(.hidden)').length > 0;
+    if (open && !S.paused) { S.paused = true; modalPaused = true; }
+    else if (!open && modalPaused) { S.paused = false; modalPaused = false; }
+  }
 
-const UI = {
-  game: null,
-  inGame: false,
-  els: {},
-  cache: {},
-  toastTimer: 0,
-  comboData: { n: 0, t: 0 },
-  bannerTimer: 0,
-  labTab: 'weapons',
-  resetArmed: false,
-  modalKind: null,
-  resultState: null,
+  /* ───────── 숫자 ───────── */
+  function fmt(n) {
+    n = Math.floor(n);
+    if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+    if (Math.abs(n) >= 10000) return (n / 1000).toFixed(1) + 'K';
+    return n.toLocaleString('ko-KR');
+  }
+  function settings() { return G.saveData.settings; }
+  function persist() { G.persist(); }
 
-  init(game) {
-    this.game = game;
-    const ids = ['hud', 'waveNum', 'waveMax', 'wavePhase', 'waveProgress', 'wavePreview', 'hpText', 'hpBar',
-      'gateState', 'btnRepairWall', 'repairCost', 'gold', 'scrap', 'rp', 'btnSpeed', 'btnPause', 'btnSettings',
-      'bossBar', 'bossName', 'bossFill', 'banner', 'bannerSub', 'bannerTitle', 'combo', 'toast', 'dock',
-      'btnUpgrade', 'btnNextWave', 'nextTimer', 'weaponSlots', 'btnAutoAim', 'reloadStrip', 'menu', 'btnStart',
-      'btnLab', 'menuRp', 'menuBest', 'menuWeapons', 'menuPerks', 'btnHow', 'btnSettings2', 'modalRoot', 'modalCard',
-      'moveLeft', 'moveRight', 'btnSettings3'];
-    for (const id of ids) this.els[id] = document.getElementById(id);
+  /* ───────── 초기화 ───────── */
+  function init() {
+    [
+      'hud', 'lobby', 'gold', 'rp', 'shards', 'waveNum', 'waveOf', 'stageLabel', 'phaseLabel',
+      'waveBar', 'waveEnemy', 'waveTimer', 'wavePreview', 'keepBar', 'keepHpText', 'wallBar', 'wallText',
+      'repairCost', 'breachLabel', 'btnRepairWall', 'btnResearch', 'btnPrestige', 'btnCodex', 'btnOptions',
+      'btnSpeed', 'btnPause', 'bossBar', 'bossName', 'bossFill', 'banner', 'bannerSub', 'bannerTitle',
+      'relicDrop', 'relicDropIcon', 'relicDropRarity', 'relicDropName', 'relicDropEffect',
+      'minimap', 'toast', 'dock', 'buildBar', 'btnPrep', 'prepLabel', 'prepSub',
+      'towerPanel', 'tpName', 'tpLevel', 'tpStats', 'tpUpgrade', 'tpSell', 'tpClose',
+      'padPanel', 'padList', 'padClose', 'lobbyBest', 'lobbyStage', 'lobbyShards', 'lobbyRelics',
+      'btnStart', 'btnContinue', 'btnStory', 'btnTechLobby', 'btnPrestigeLobby', 'btnCodexLobby',
+      'btnOptionsLobby', 'btnStageSelect', 'verBadge', 'stageModal', 'stageGrid',
+      'stageClearModal', 'scTitle', 'scSub', 'scGold', 'scRp', 'scShards', 'btnNextStage', 'btnStagePrestige',
+      'defeatModal', 'defeatSub', 'dfKills', 'dfShards', 'btnRetry', 'btnDefeatPrestige', 'btnToLobby',
+      'techModal', 'techTabs', 'techNodes', 'techLines', 'techInfo', 'techRp', 'techScroll', 'techResetView',
+      'prestigeModal', 'prestigeShards', 'psWave', 'psGain', 'psKills', 'prestigeCats', 'prestigeList',
+      'btnDoPrestige', 'prestigeHint', 'codexModal', 'codexGrid', 'codexCount', 'storyModal', 'storyList',
+      'optionsModal', 'cheatModal', 'cheatRelicPick', 'cheatGold', 'cheatRp', 'cheatShards',
+      'btnResetSave', 'optUnitScale', 'optZoom', 'optFx', 'optDmg', 'optShake', 'optSound', 'optCutscene',
+      'cheatRelicBoost', 'rotateHint', 'btnZoomIn', 'btnZoomOut', 'btnRecenter',
+    ].forEach(id => { el[id] = $(id); });
 
-    this.buildWeaponSlots();
-    this.bind();
-    this.syncMenu();
-    this.applySettings();
-  },
+    buildBuildBar();
+    bind();
+    buildTechTree();
+    buildPrestige();
+    buildCodex();
+    buildStory();
+    buildStageGrid();
+    syncOptions();
+    updateLobby();
+    el.btnContinue.classList.toggle('hidden', !(G.saveData.run));
+    el.padList.addEventListener('click', onPadListClick);
+    window.addEventListener('keydown', onKey);
+    if (window.Cutscene) window.Cutscene._resize && window.Cutscene._resize();
+  }
 
-  /* ── build static parts ─────────────────── */
-  buildWeaponSlots() {
-    const wrap = this.els.weaponSlots;
-    if (!wrap) return;
-    wrap.innerHTML = '';
-    WEAPONS.forEach((w, i) => {
+  function bind() {
+    el.btnStart.addEventListener('click', () => startGame(1));
+    el.btnContinue.addEventListener('click', () => {
+      hideLobby();
+      if (!G.continueRun()) { startGame(1); return; }
+      window.Render.resetForRun();
+      UI.toast('이어서 방어전을 재개합니다.');
+    });
+    el.btnStory.addEventListener('click', () => openStory());
+    el.btnTechLobby.addEventListener('click', () => openTech());
+    el.btnPrestigeLobby.addEventListener('click', () => openPrestige());
+    el.btnCodexLobby.addEventListener('click', () => openCodex());
+    el.btnOptionsLobby.addEventListener('click', () => openOptions());
+    el.btnStageSelect.addEventListener('click', () => openStageSelect());
+    el.btnResearch.addEventListener('click', () => openTech());
+    el.btnPrestige.addEventListener('click', () => openPrestige());
+    el.btnCodex.addEventListener('click', () => openCodex());
+    el.btnOptions.addEventListener('click', () => openOptions());
+    el.btnZoomIn.addEventListener('click', () => { Render.zoomAt(window.innerWidth / 2, window.innerHeight / 2, 1.18); SFX.play('click'); });
+    el.btnZoomOut.addEventListener('click', () => { Render.zoomAt(window.innerWidth / 2, window.innerHeight / 2, 0.85); SFX.play('click'); });
+    el.btnRecenter.addEventListener('click', () => { Render.focusVillage(); SFX.play('click'); });
+    el.btnSpeed.addEventListener('click', () => cycleSpeed());
+    el.btnPause.addEventListener('click', () => togglePause());
+    el.btnRepairWall.addEventListener('click', () => {
+      if (S.phase === 'lobby') return;
+      if (G.repairWalls()) { SFX.play('build'); toast('성벽을 수리했습니다.'); }
+      else toast('골드가 부족합니다.');
+    });
+    el.btnPrep.addEventListener('click', () => {
+      if (S.phase === 'prep') { G.startWave(); SFX.play('wave'); }
+    });
+    el.tpClose.addEventListener('click', clearSelection);
+    el.padClose.addEventListener('click', clearSelection);
+    el.tpUpgrade.addEventListener('click', () => {
+      if (!selTower) return;
+      if (G.upgradeTower(selTower)) { SFX.play('upgrade'); refreshTowerPanel(); }
+      else toast(selTower.level >= D.TOWER_MAX_LEVEL ? '최대 레벨입니다.' : '골드가 부족합니다.');
+    });
+    el.tpSell.addEventListener('click', () => {
+      if (!selTower) return;
+      const t = selTower;
+      askConfirm('포탑 철거', t.def ? '' : (D.TOWERS[t.type].name + ' Lv.' + t.level + '을(를) 철거하고 건설비의 60%를 돌려받습니다.'), () => {
+        G.sellTower(t); SFX.play('sell'); clearSelection();
+      });
+    });
+    document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', e => {
+      const m = e.target.closest('.modal'); if (m) m.classList.add('hidden');
+      setTimeout(refreshModalPause, 0);
+    }));
+    document.querySelectorAll('.modal').forEach(m => m.addEventListener('mousedown', e => {
+      if (e.target === m) { m.classList.add('hidden'); setTimeout(refreshModalPause, 0); }
+    }));
+    el.btnNextStage.addEventListener('click', () => {
+      el.stageClearModal.classList.add('hidden');
+      G.nextStage();
+      SFX.play('click');
+    });
+    el.btnStagePrestige.addEventListener('click', () => { el.stageClearModal.classList.add('hidden'); openPrestige(); });
+    el.btnRetry.addEventListener('click', () => { el.defeatModal.classList.add('hidden'); startGame(1); });
+    el.btnDefeatPrestige.addEventListener('click', () => { el.defeatModal.classList.add('hidden'); openPrestige(); });
+    el.btnToLobby.addEventListener('click', () => { el.defeatModal.classList.add('hidden'); toLobby(); });
+    el.btnDoPrestige.addEventListener('click', tryPrestige);
+    el.techResetView.addEventListener('click', () => { el.techScroll.scrollTop = 0; el.techScroll.scrollLeft = 0; });
+    el.btnResetSave.addEventListener('click', () => {
+      askConfirm('저장 초기화', '회귀석·유물·기술·기록이 모두 삭제됩니다. 정말 초기화할까요?', () => G.cheat.resetSave());
+    });
+    // 옵션
+    bindSeg('optUnitScale', 'unitScale', v => parseFloat(v), () => window.Render.applySettings());
+    bindSeg('optZoom', 'zoomBase', v => parseFloat(v), () => { window.Render.applySettings(); window.Render.focusVillage(); });
+    bindSeg('optFx', 'effects', v => v);
+    bindSeg('optDmg', 'dmgNumbers', v => v === '1');
+    bindSeg('optShake', 'shake', v => v === '1');
+    bindSeg('optSound', 'sound', v => { const on = v === '1'; SFX.setEnabled(on); return on; });
+    bindSeg('optCutscene', 'cutscene', v => v === '1');
+    bindSeg('cheatRelicBoost', null, null, null, v => { S.cheat.relicBoost = parseFloat(v); });
+    // 기술 탭
+    el.techTabs.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      activeTechCat = b.dataset.cat; activeTechNode = null;
+      buildTechTree(); SFX.play('click');
+    });
+    // 재회귀 탭
+    el.prestigeCats.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      activePrestigeCat = b.dataset.cat; buildPrestige(); SFX.play('click');
+    });
+    el.codexModal.addEventListener('click', e => {
+      if (e.target.closest('[data-close]') || e.target === el.codexModal) el.codexModal.classList.add('hidden');
+    });
+    // 유물 배너 클릭
+    el.relicDrop.addEventListener('click', () => { el.relicDrop.classList.add('hidden'); openCodex(); });
+    // 스테이지 선택
+    el.stageGrid.addEventListener('click', e => {
+      const b = e.target.closest('.stage-card'); if (!b || b.disabled) return;
+      const stage = parseInt(b.dataset.stage, 10);
+      el.stageModal.classList.add('hidden');
+      startGame(stage);
+    });
+    // 치트
+    el.cheatModal.addEventListener('click', e => {
+      if (e.target.closest('[data-close]') || e.target === el.cheatModal) el.cheatModal.classList.add('hidden');
+    });
+    document.querySelectorAll('[data-cheat]').forEach(b => b.addEventListener('click', () => doCheat(b.dataset.cheat)));
+    el.verBadge.addEventListener('click', () => {
+      cheatOpenCount++;
+      clearTimeout(cheatClickTimer);
+      cheatClickTimer = setTimeout(() => { cheatOpenCount = 0; }, 1400);
+      if (cheatOpenCount >= 5) { cheatOpenCount = 0; openCheat(); }
+    });
+    // 모달 외부 클릭 닫기 (기술/재회귀 등)
+    ['techModal', 'prestigeModal', 'storyModal', 'optionsModal', 'stageModal', 'cheatModal'].forEach(id => {
+      $(id).addEventListener('mousedown', e => { if (e.target === $(id)) $(id).classList.add('hidden'); });
+    });
+    // 게임 이벤트
+    G.on('relic', d => { if (d.relic) showRelicDrop(d.relic); });
+    G.on('stageClear', d => showStageClear(d));
+    G.on('defeat', d => showDefeat(d));
+    G.on('wallBreach', d => {
+      const dir = D.DIRS.find(x => x.id === d.side);
+      banner('성벽 붕괴', (dir ? dir.name : '') + ' 방벽이 무너졌습니다!', 2200);
+      Render.shake(7);
+    });
+    G.on('buildingDown', b => toast(b.name + ' 파괴! 마을 방어에 손실이 생겼습니다.'));
+    G.on('towerDestroyed', t => toast(D.TOWERS[t.type].name + ' 파괴! 슬롯이 비었습니다.'));
+    G.on('toast', m => toast(m));
+    G.on('towerChange', () => updateBuildBar());
+    G.on('waveStart', d => {
+      maybeBossStory(d);
+      setTimeout(() => { updateBuildBar(); }, 60);
+    });
+    G.on('nextStage', st => maybeStoryForStage(st));
+    G.on('prestige', () => { hideModals(); toLobby(); });
+    // 5탭 배지 경로 + 키보드 치트
+    window.addEventListener('keydown', e => {
+      if (e.ctrlKey && e.shiftKey && (e.key === 'C' || e.key === 'c')) { e.preventDefault(); openCheat(); }
+    });
+  }
+
+  function bindSeg(id, key, parse, after, custom) {
+    const box = $(id); if (!box) return;
+    box.addEventListener('click', e => {
+      const b = e.target.closest('button'); if (!b) return;
+      const v = b.dataset.v;
+      if (custom) { custom(v); }
+      else if (key) {
+        const val = parse ? parse(v) : v;
+        settings()[key] = val;
+        persist();
+        if (key === 'sound') SFX.setEnabled(!!val);
+        if (after) after(val);
+      }
+      syncOptions();
+      SFX.play('click');
+    });
+  }
+
+  /* ───────── 로비 ───────── */
+  function updateLobby() {
+    const s = G.saveData;
+    el.lobbyBest.textContent = (s.bestWave || 0);
+    el.lobbyStage.textContent = (s.maxStage || 1);
+    el.lobbyShards.textContent = fmt(S.shards);
+    el.lobbyRelics.textContent = Object.keys(s.relics || {}).length + '/' + D.RELICS.length;
+    el.btnContinue.classList.toggle('hidden', !s.run);
+  }
+  function hideLobby() { el.lobby.classList.add('hidden'); el.hud.classList.remove('hidden'); }
+  function showLobby() {
+    el.lobby.classList.remove('hidden'); el.hud.classList.add('hidden');
+    updateLobby();
+  }
+  function toLobby() {
+    S.phase = 'lobby';
+    S.paused = false;
+    S.enemies.length = 0; S.towers.length = 0; S.projectiles.length = 0;
+    G.persist();
+    hideModals();
+    showLobby();
+    window.Render.focusVillage();
+    G.saveRun && G.saveRun();
+  }
+  function startGame(stage) {
+    hideLobby();
+    hideModals();
+    clearSelection();
+    const openFirst = !(G.saveData.seenCutscenes || {}).opening && settings().cutscene;
+    if (openFirst) {
+      playCutscene('opening', () => {
+        G.startRun({ stage });
+        window.Render.resetForRun();
+        SFX.resume();
+      });
+    } else {
+      G.startRun({ stage });
+      window.Render.resetForRun();
+      SFX.resume();
+    }
+  }
+  function maybeStoryForStage(stage) {
+    if (!settings().cutscene) return;
+    const map = { 2: 'stage2', 3: 'stage3', 5: 'stage5' };
+    const id = map[stage];
+    if (id && !(G.saveData.seenCutscenes || {})[id]) {
+      playCutscene(id, () => { S.paused = false; });
+    }
+  }
+  function maybeBossStory(d) {
+    if (!settings().cutscene) return;
+    const bossWave = d.wi === D.WAVES_PER_STAGE && d.stage === 1;
+    if (bossWave && !(G.saveData.seenCutscenes || {}).boss1) {
+      setTimeout(() => {
+        if (document.querySelector('.overlay.modal:not(.hidden)')) return;
+        playCutscene('boss1', () => { S.paused = false; });
+      }, 350);
+    }
+  }
+  function playCutscene(id, cb) {
+    if (!window.Cutscene) { if (cb) cb(); return; }
+    S.paused = true;
+    window.Cutscene.play(id, () => { S.paused = false; if (cb) cb(); });
+  }
+
+  /* ───────── HUD ───────── */
+  function update(dt) {
+    lastHud += dt;
+    if (lastHud < 0.08) { drawMinimap(dt); return; }
+    lastHud = 0;
+    updateHud();
+    drawMinimap(dt);
+    if (toastTimer > 0) { toastTimer -= 0.08; if (toastTimer <= 0) el.toast.classList.remove('show'); }
+    if (bannerTimer > 0) { bannerTimer -= 0.08; if (bannerTimer <= 0) el.banner.classList.remove('show'); }
+    if (relicTimer > 0) { relicTimer -= 0.08; if (relicTimer <= 0) el.relicDrop.classList.add('hidden'); }
+    updateBuildBar();
+  }
+
+  function updateHud() {
+    if (S.phase === 'lobby') return;
+    const st = S.stats || G.computeStats();
+    el.gold.textContent = fmt(S.gold);
+    el.rp.textContent = fmt(S.rp);
+    el.shards.textContent = fmt(S.shards);
+    el.stageLabel.textContent = 'STAGE ' + S.stage;
+    el.waveNum.textContent = S.wi;
+    el.waveOf.textContent = '/' + D.WAVES_PER_STAGE;
+    const phaseTxt = { prep: '준비', wave: '전투', stageclear: '클리어', defeat: '함락' }[S.phase] || '준비';
+    el.phaseLabel.textContent = phaseTxt;
+    el.phaseLabel.className = 'phase-chip' + (S.phase === 'wave' ? ' wave' : '');
+    let wpct = 0;
+    if (S.phase === 'prep') wpct = 1 - S.prepLeft / Math.max(1, S.prepTime);
+    else if (S.phase === 'wave') wpct = 1 - (S.enemies.length + (S.spawnQueue.length - S.spawnCursor)) / Math.max(1, totalWaveCount());
+    el.waveBar.style.width = Math.max(0, Math.min(100, wpct * 100)) + '%';
+    const alive = S.enemies.length;
+    const remain = Math.max(0, S.spawnQueue.length - S.spawnCursor) + alive;
+    el.waveEnemy.textContent = S.phase === 'wave' ? ('적 ' + remain + (alive ? ' · 전장 ' + alive : '')) : ('예상 적 ' + totalWaveCount());
+    el.waveTimer.textContent = S.phase === 'prep' ? '다음 웨이브 ' + Math.ceil(S.prepLeft) + 's' : S.phase === 'wave' ? '교전 중' : '';
+    // 편성 미리보기
+    const comp = S.waveComp || [];
+    el.wavePreview.innerHTML = comp.slice(0, 5).map(c => '<span title="' + D.ENEMIES[c.type].name + '">' + enemyIcon(c.type) + c.count + '</span>').join('');
+    // 기지
+    el.keepHpText.textContent = Math.ceil(S.keepHp);
+    el.keepBar.style.width = Math.max(0, S.keepHp / Math.max(1, S.keepMax) * 100) + '%';
+    const wr = G.wallRatio();
+    el.wallText.textContent = Math.round(wr * 100) + '%';
+    el.wallBar.style.width = (wr * 100) + '%';
+    el.repairCost.textContent = fmt(G.repairWallCost());
+    el.btnRepairWall.disabled = S.gold < G.repairWallCost() || S.phase === 'lobby';
+    const breached = ['N', 'E', 'S', 'W'].filter(k => S.walls[k] && S.walls[k].hp <= 0);
+    el.breachLabel.textContent = breached.length ? ('붕괴 ' + breached.map(k => D.DIRS.find(d => d.id === k).name).join('·')) : '';
+    // 알림 배지
+    const canBuy = D.TECHS.some(n => {
+      const lv = (G.saveData.research || {})[n.id] || 0;
+      if (lv >= n.max) return false;
+      if (n.req && !n.req.every(r => ((G.saveData.research || {})[r] || 0) >= 1)) return false;
+      return S.rp >= nodeCost(n, lv);
+    });
+    el.btnResearch.classList.toggle('on', canBuy);
+    el.btnPrestige.classList.toggle('on', G.canPrestige());
+    // 배속/일시정지
+    el.btnSpeed.textContent = S.speed + '×';
+    el.btnPause.textContent = S.paused ? '▶' : '❚❚';
+    el.btnPause.classList.toggle('on', S.paused);
+    // 준비 버튼
+    if (S.phase === 'prep') {
+      el.prepLabel.textContent = '웨이브 시작';
+      el.prepSub.textContent = '준비 ' + Math.ceil(S.prepLeft) + '초 · 탭하여 즉시';
+      el.btnPrep.classList.remove('wave');
+    } else if (S.phase === 'wave') {
+      el.prepLabel.textContent = '전투 중';
+      el.prepSub.textContent = remain + '마리 남음';
+      el.btnPrep.classList.add('wave');
+    } else {
+      el.prepLabel.textContent = '대기';
+      el.prepSub.textContent = '';
+    }
+    // 보스
+    const boss = S.enemies.find(e => e.def.boss);
+    if (boss) {
+      el.bossBar.classList.remove('hidden');
+      el.bossName.textContent = D.ENEMIES[boss.type].name + ' · ' + Math.ceil(boss.hp);
+      el.bossFill.style.width = Math.max(0, boss.hp / boss.hpMax * 100) + '%';
+    } else el.bossBar.classList.add('hidden');
+    // 포탑 패널 실시간
+    if (selTower) refreshTowerPanel();
+  }
+
+  function enemyIcon(type) {
+    return { peasant: '🧑‍🌾', spearman: '🔱', shield: '🛡️', archer: '🏹', cavalry: '🐎', berserker: '🪓', ram: '🪵', catapult: '🪨', knight: '⚔️', siege: '🏯', lord: '👑' }[type] || '❗';
+  }
+  function totalWaveCount() { return (S.waveComp || []).reduce((a, c) => a + c.count, 0); }
+
+  /* ───────── 미니맵 ───────── */
+  function drawMinimap(dt) {
+    minimapTick += dt;
+    if (minimapTick < 0.12) return;
+    minimapTick = 0;
+    const c = el.minimap; if (!c) return;
+    const x = c.getContext('2d');
+    const W = c.width, H = c.height, cx = W / 2, cy = H / 2, R = W * 0.44;
+    x.clearRect(0, 0, W, H);
+    x.fillStyle = 'rgba(8,12,16,.9)'; x.fillRect(0, 0, W, H);
+    const P = (wx, wy) => [cx + ((wx - wy) / D.MAP) * R, cy + (((wx + wy) / (2 * D.MAP)) - 0.5) * R];
+    // 맵 외곽
+    x.beginPath();
+    [[0, 0], [D.MAP, 0], [D.MAP, D.MAP], [0, D.MAP]].forEach((p, i) => {
+      const q = P(p[0], p[1]); i ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]);
+    });
+    x.closePath(); x.fillStyle = 'rgba(40,60,45,.55)'; x.fill();
+    x.strokeStyle = 'rgba(120,160,130,.35)'; x.lineWidth = 1; x.stroke();
+    // 마을
+    const V = D.VILLAGE;
+    x.beginPath();
+    [[V.x0, V.y0], [V.x1, V.y0], [V.x1, V.y1], [V.x0, V.y1]].forEach((p, i) => {
+      const q = P(p[0], p[1]); i ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]);
+    });
+    x.closePath(); x.fillStyle = 'rgba(220,180,90,.28)'; x.fill();
+    x.strokeStyle = 'rgba(255,200,100,.7)'; x.stroke();
+    // 적
+    x.fillStyle = '#ff5f5f';
+    for (let i = 0; i < S.enemies.length; i += Math.max(1, Math.floor(S.enemies.length / 260))) {
+      const e = S.enemies[i];
+      const q = P(e.x, e.y);
+      x.fillRect(q[0] - 1, q[1] - 1, 2, 2);
+    }
+    // 포탑
+    x.fillStyle = '#8fd0ff';
+    for (const t of S.towers) { const q = P(t.x, t.y); x.fillRect(q[0] - 1.5, q[1] - 1.5, 3, 3); }
+    // 카메라
+    const cam = window.Render.cam;
+    const q = P(cam.x, cam.y);
+    x.strokeStyle = 'rgba(255,255,255,.7)'; x.lineWidth = 1;
+    x.strokeRect(q[0] - 6, q[1] - 4, 12, 8);
+    // 웨이브 방향
+    for (const d of (S.waveDirs || [])) {
+      const def = D.DIRS.find(k => k.id === d);
+      const a = def.angle * Math.PI / 180;
+      x.fillStyle = 'rgba(255,90,80,.8)';
+      x.beginPath();
+      const ax = cx + Math.cos(a) * R * 0.96, ay = cy + Math.sin(a) * R * 0.48;
+      x.arc(ax, ay, 3, 0, 6.2832); x.fill();
+    }
+    // 보스
+    const boss = S.enemies.find(e => e.def.boss);
+    if (boss) {
+      const q = P(boss.x, boss.y);
+      x.fillStyle = '#ff3b4b'; x.beginPath(); x.arc(q[0], q[1], 4, 0, 6.2832); x.fill();
+    }
+  }
+
+  /* ───────── 건설 바 ───────── */
+  function buildBuildBar() {
+    el.buildBar.innerHTML = '';
+    for (const id in D.TOWERS) {
+      const t = D.TOWERS[id];
       const b = document.createElement('button');
-      b.className = 'slot';
-      b.dataset.weapon = w.id;
-      b.title = `${w.name}\n${w.desc}\n(단축키 ${i + 1})`;
-      b.innerHTML = `<span class="key">${i + 1}</span><span class="wname">${w.short}</span><span class="ammo">${w.mag}</span>`;
+      b.className = 'build-btn';
+      b.dataset.tower = id;
+      b.innerHTML = '<span class="b-ico">' + t.icon + '</span><span class="b-name">' + t.short + '</span><span class="b-cost">' + fmt(G.towerCost(id, 0)) + '</span><span class="b-lock"></span>';
+      b.title = t.name + ' — ' + t.desc;
       b.addEventListener('click', () => {
-        if (!this.inGame) return;
-        Sfx.init();
-        this.game.switchWeapon(w.id);
+        const st = S.stats || G.computeStats();
+        if (!st.unlocked.has(id)) {
+          toast(t.name + '은(는) 기술 트리에서 해석해야 합니다.');
+          return;
+        }
+        buildType = buildType === id ? null : id;
+        window.Render.setBuildType(buildType);
+        clearSelection(true);
+        updateBuildBar();
+        SFX.play('click');
       });
-      wrap.appendChild(b);
+      el.buildBar.appendChild(b);
+    }
+    updateBuildBar();
+  }
+  function updateBuildBar() {
+    if (!el.buildBar) return;
+    const st = S.stats || G.computeStats();
+    el.buildBar.querySelectorAll('.build-btn').forEach(b => {
+      const id = b.dataset.tower;
+      const t = D.TOWERS[id];
+      const unlocked = st.unlocked.has(id);
+      const cost = G.towerCost(id, 0);
+      b.classList.toggle('locked', !unlocked);
+      b.classList.toggle('sel', buildType === id);
+      b.classList.toggle('poor', unlocked && S.gold < cost);
+      const lock = b.querySelector('.b-lock');
+      lock.textContent = unlocked ? '' : '🔒';
+      const costEl = b.querySelector('.b-cost');
+      costEl.textContent = unlocked ? fmt(cost) : '연구';
+      b.title = unlocked ? (t.name + ' — ' + t.desc) : (t.name + ' — 기술 트리에서 해금 필요');
     });
-  },
+    if (buildType && !st.unlocked.has(buildType)) { buildType = null; window.Render.setBuildType(null); }
+  }
 
-  bind() {
-    const g = this.game;
-    document.querySelectorAll('.build-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        Sfx.init();
-        if (!this.inGame) return;
-        this.game.enterBuild(btn.dataset.build);
-      });
-    });
-    document.querySelectorAll('.skill-btn[data-skill]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        Sfx.init();
-        if (!this.inGame) return;
-        this.game.requestSkill(btn.dataset.skill);
-      });
-    });
-    this.els.btnUpgrade && this.els.btnUpgrade.addEventListener('click', () => { Sfx.init(); this.openUpgrade(); });
-    this.els.btnNextWave && this.els.btnNextWave.addEventListener('click', () => {
-      Sfx.init();
-      if (!this.inGame) return;
-      if (this.game.phase === 'prep') this.game.startWave(true);
-    });
-    this.els.btnPause && this.els.btnPause.addEventListener('click', () => { Sfx.init(); this.togglePause(); });
-    this.els.btnSpeed && this.els.btnSpeed.addEventListener('click', () => {
-      Sfx.init();
-      if (!this.inGame) return;
-      this.game.speed = this.game.speed === 1 ? 2 : 1;
-      this.els.btnSpeed.textContent = this.game.speed + '×';
-      this.els.btnSpeed.classList.toggle('on', this.game.speed === 2);
-    });
-    this.els.btnSettings && this.els.btnSettings.addEventListener('click', () => { Sfx.init(); this.openSettings(); });
-    this.els.btnSettings2 && this.els.btnSettings2.addEventListener('click', () => { Sfx.init(); this.openSettings(); });
-    this.els.btnAutoAim && this.els.btnAutoAim.addEventListener('click', () => {
-      Sfx.init();
-      g.autoAim = !g.autoAim;
-      Save.data.settings.autoAim = g.autoAim;
-      Save.save();
-      this.applySettings();
-      this.toast(g.autoAim ? '자동 조준 ON — 탭은 스킬·건설에 사용' : '자동 조준 OFF', 'gold');
-    });
-    this.els.btnRepairWall && this.els.btnRepairWall.addEventListener('click', () => { Sfx.init(); this.game.repairWall(); });
+  /* ───────── 선택 / 패널 ───────── */
+  function selectTower(t) {
+    selTower = t; selPad = -1;
+    buildType = null; window.Render.setBuildType(null);
+    window.Render.setSelected(t);
+    el.towerPanel.classList.remove('hidden');
+    el.padPanel.classList.add('hidden');
+    refreshTowerPanel();
+  }
+  function selectPad(i) {
+    selPad = i; selTower = null;
+    window.Render.setSelected(null);
+    el.towerPanel.classList.add('hidden');
+    el.padPanel.classList.remove('hidden');
+    renderPadList();
+  }
+  function clearSelection(keepBuild) {
+    selTower = null; selPad = -1;
+    window.Render.setSelected(null);
+    el.towerPanel.classList.add('hidden');
+    el.padPanel.classList.add('hidden');
+    if (!keepBuild) { buildType = null; window.Render.setBuildType(null); }
+  }
+  function refreshTowerPanel() {
+    if (!selTower) return;
+    const t = selTower;
+    const def = D.TOWERS[t.type];
+    const s = G.towerStats(t);
+    const cost = G.towerCost(t.type, t.level);
+    let spent = G.towerCost(t.type, 0);
+    for (let l = 1; l < t.level; l++) spent += G.towerCost(t.type, l);
+    el.tpName.textContent = def.icon + ' ' + def.name;
+    el.tpLevel.textContent = 'Lv ' + t.level;
+    el.tpStats.innerHTML =
+      '<span>DPS <b>' + fmt(G.towerDps(t)) + '</b></span>' +
+      '<span>피해 <b>' + fmt(s.dmg) + '</b></span>' +
+      '<span>사거리 <b>' + s.range.toFixed(1) + '</b></span>' +
+      '<span>처치 <b>' + t.kills + '</b></span>' +
+      '<span>내구도 <b>' + Math.ceil(t.hp) + '/' + Math.ceil(t.hpMax) + '</b></span>';
+    const maxed = t.level >= D.TOWER_MAX_LEVEL;
+    el.tpUpgrade.innerHTML = maxed ? '최대 레벨' : ('강화 <em>' + fmt(cost) + '</em>🪙');
+    el.tpUpgrade.disabled = maxed || S.gold < cost;
+    el.tpSell.innerHTML = '철거 <em>' + fmt(Math.round(spent * 0.6)) + '</em>🪙';
+  }
+  function renderPadList() {
+    const st = S.stats || G.computeStats();
+    el.padList.innerHTML = '';
+    for (const id in D.TOWERS) {
+      const t = D.TOWERS[id];
+      const unlocked = st.unlocked.has(id);
+      const cost = G.towerCost(id, 0);
+      const b = document.createElement('button');
+      b.dataset.tower = id;
+      b.disabled = !unlocked || S.gold < cost;
+      b.innerHTML = '<span class="pi">' + t.icon + '</span><span class="pn">' + t.short + '</span><span class="pc">' + (unlocked ? fmt(cost) : '🔒') + '</span>';
+      el.padList.appendChild(b);
+    }
+  }
+  function onPadListClick(e) {
+    const b = e.target.closest('button[data-tower]');
+    if (!b || selPad < 0) return;
+    const id = b.dataset.tower;
+    if (G.placeTower(selPad, id)) {
+      SFX.play('build');
+      selectTower(S.pads[selPad].tower);
+      toast(D.TOWERS[id].name + ' 배치 완료');
+    } else toast('배치할 수 없습니다. (골드·슬롯 확인)');
+  }
 
-    this.els.btnStart && this.els.btnStart.addEventListener('click', () => { Sfx.init(); this.openDifficulty(); });
-    this.els.btnLab && this.els.btnLab.addEventListener('click', () => { Sfx.init(); this.openLab(); });
-    this.els.btnHow && this.els.btnHow.addEventListener('click', () => { Sfx.init(); this.openHelp(); });
-
-    // 이동 버튼
-    const move = (el, dir) => {
-      if (!el) return;
-      const on = (e) => { e.preventDefault(); this.game.touchMove = dir; Sfx.init(); };
-      const off = (e) => { if (e) e.preventDefault(); this.game.touchMove = 0; };
-      el.addEventListener('pointerdown', on);
-      el.addEventListener('pointerup', off);
-      el.addEventListener('pointercancel', off);
-      el.addEventListener('pointerleave', off);
+  /* ───────── 기술 트리 ───────── */
+  function nodeCost(node, level) { return Math.round(node.cost * (1 + level * 0.9)); }
+  function techLv(id) { return (G.saveData.research || {})[id] || 0; }
+  function reqOk(node) {
+    if (!node.req) return true;
+    return node.req.every(r => techLv(r) >= 1);
+  }
+  function buildTechTree() {
+    // 탭
+    el.techTabs.innerHTML = D.CATS.map(c => '<button data-cat="' + c.id + '" class="' + (c.id === activeTechCat ? 'on' : '') + '">' + c.icon + ' ' + c.name + '</button>').join('');
+    el.techRp.textContent = fmt(S.rp);
+    const nodes = D.TECHS.filter(t => t.cat === activeTechCat);
+    const W = 1120, H = 470;
+    el.techNodes.innerHTML = '';
+    el.techLines.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    el.techLines.setAttribute('width', W); el.techLines.setAttribute('height', H);
+    const pos = {};
+    for (const n of nodes) pos[n.id] = { x: 24 + n.x * 176, y: 18 + n.y * 108 };
+    // 선
+    let paths = '';
+    for (const n of nodes) {
+      if (!n.req) continue;
+      for (const r of n.req) {
+        const a = pos[r], b = pos[n.id];
+        if (!a || !b) continue;
+        const on = techLv(r) >= 1 && techLv(n.id) >= 1;
+        paths += '<path d="M' + (a.x + 74) + ' ' + (a.y + 92) + ' C' + (a.x + 74) + ' ' + (a.y + 108) + ', ' + (b.x + 74) + ' ' + (b.y - 16) + ', ' + (b.x + 74) + ' ' + (b.y) + '" class="' + (on ? 'on' : '') + '"/>';
+      }
+    }
+    el.techLines.innerHTML = paths;
+    // 노드
+    for (const n of nodes) {
+      const lv = techLv(n.id);
+      const maxed = lv >= n.max;
+      const avail = reqOk(n) && !maxed;
+      const cost = nodeCost(n, lv);
+      const b = document.createElement('button');
+      b.className = 'tech-node' + (maxed ? ' maxed' : reqOk(n) ? (avail ? ' avail' : '') : ' locked') + (activeTechNode === n.id ? ' sel' : '');
+      b.style.left = pos[n.id].x + 'px'; b.style.top = pos[n.id].y + 'px';
+      let pips = '';
+      for (let i = 0; i < n.max; i++) pips += '<i class="' + (i < lv ? 'on' : '') + '"></i>';
+      b.innerHTML = '<div class="tn-top"><span class="tn-icon">' + n.icon + '</span><span class="tn-name">' + n.name + '</span></div>' +
+        '<div class="tn-desc">' + n.desc + '</div>' +
+        '<div class="tn-foot"><span class="tn-cost">' + (maxed ? 'MAX' : (n.eff.unlock ? '해금 ' : '') + fmt(cost) + '📘') + '</span><span class="tn-pips">' + pips + '</span></div>';
+      b.addEventListener('click', () => { activeTechNode = n.id; buildTechTree(); renderTechInfo(n); SFX.play('click'); });
+      el.techNodes.appendChild(b);
+    }
+    if (activeTechNode) {
+      const n = D.TECHS.find(t => t.id === activeTechNode);
+      if (n) renderTechInfo(n);
+    } else {
+      el.techInfo.innerHTML = '<div class="ti-empty">노드를 선택하면 상세 효과와 선행 조건이 표시됩니다.<br><br>연구 포인트(📘)는 웨이브를 막을 때마다 얻습니다. 재회귀하면 일반 연구는 초기화됩니다.</div>';
+    }
+  }
+  function renderTechInfo(n) {
+    const lv = techLv(n.id);
+    const maxed = lv >= n.max;
+    const cost = nodeCost(n, lv);
+    const cat = D.CATS.find(c => c.id === n.cat);
+    const reqs = (n.req || []).map(r => {
+      const rn = D.TECHS.find(t => t.id === r);
+      const ok = techLv(r) >= 1;
+      return '<div class="' + (ok ? 'ok' : 'no') + '">' + (ok ? '✓' : '✕') + ' ' + (rn ? rn.name : r) + ' Lv.1</div>';
+    }).join('') || '<div class="ok">✓ 선행 조건 없음</div>';
+    el.techInfo.innerHTML =
+      '<div class="ti-icon">' + n.icon + '</div>' +
+      '<div class="ti-name">' + n.name + '</div>' +
+      '<div class="ti-cat">' + cat.name + ' · 최대 ' + n.max + '레벨</div>' +
+      '<div class="ti-level">현재 Lv.' + lv + ' / ' + n.max + '</div>' +
+      '<div class="ti-desc">' + n.desc + '</div>' +
+      '<div class="ti-eff">' + effectHtml(n.eff, lv) + '</div>' +
+      '<div class="ti-req"><b>선행 조건</b>' + reqs + '</div>' +
+      (maxed ? '<button class="btn primary ti-buy" disabled>최대 레벨 달성</button>'
+        : '<button class="btn primary ti-buy" id="techBuy" ' + (reqOk(n) && S.rp >= cost ? '' : 'disabled') + '>' +
+          (reqOk(n) ? '연구 <em>' + fmt(cost) + '</em> 📘' : '선행 연구 필요') + '</button>');
+    const buy = $('techBuy');
+    if (buy) buy.addEventListener('click', () => {
+      if (!reqOk(n) || S.rp < cost) { toast('연구 포인트가 부족하거나 선행 조건이 없습니다.'); return; }
+      S.rp -= cost;
+      const r = G.saveData.research || (G.saveData.research = {});
+      r[n.id] = lv + 1;
+      G.computeStats(); G.persist();
+      SFX.play('upgrade');
+      buildTechTree(); renderTechInfo(n); updateBuildBar();
+      el.techRp.textContent = fmt(S.rp);
+    });
+  }
+  function effectHtml(eff, lv) {
+    const labels = {
+      dmgMul: '모든 포탑 피해', rateMul: '공격 속도', rangeMul: '사거리', aoeMul: '폭발 범위',
+      goldMul: '골드 획득', rpMul: '연구 획득', shardMul: '회귀석 획득', keepHpMul: '기지 내구도',
+      wallHpMul: '성벽 내구도', buildCostMul: '건설 비용', armorPen: '방어구 관통', crit: '치명타 확률',
+      burn: '화상 피해', chain: '연쇄 폭발', pierce: '관통', slots: '방어 슬롯', startGold: '시작 골드',
+      startRP: '시작 연구', repair: '자동 수리', freeTower: '무료 포탑', keepResearch: '연구 유지',
+      doubleShot: '연발 확률', slowHit: '감속 확률', unlock: '병기 해금',
     };
-    move(this.els.moveLeft, -1);
-    move(this.els.moveRight, 1);
+    let out = '';
+    for (const k in eff) {
+      if (k === 'unlock') { out += '<div><b>' + (D.TOWERS[eff[k]] ? D.TOWERS[eff[k]].name : eff[k]) + '</b> 해금</div>'; continue; }
+      const label = labels[k] || k;
+      const v = eff[k];
+      const pct = ['dmgMul', 'rateMul', 'rangeMul', 'aoeMul', 'goldMul', 'rpMul', 'shardMul', 'keepHpMul', 'wallHpMul', 'buildCostMul', 'crit', 'repair', 'doubleShot', 'slowHit', 'keepResearch'].includes(k);
+      const per = pct ? (v > 0 ? '+' : '') + (v * 100).toFixed(0) + '%' : (v > 0 ? '+' : '') + v;
+      out += '<div>' + label + ' <b>' + per + '</b> / 레벨' + (lv ? ' → 누적 ' + (pct ? (v * lv * 100).toFixed(0) + '%' : v * lv) : '') + '</div>';
+    }
+    return out || '효과 없음';
+  }
 
-    // 모달 배경
-    const root = this.els.modalRoot;
-    if (root) {
-      root.addEventListener('pointerdown', (e) => {
-        if (e.target.classList.contains('modal-backdrop')) this.closeModal();
+  /* ───────── 재회귀 ───────── */
+  function prestigeCost(node, lv) { return Math.round(node.cost * Math.pow(1.55, lv)); }
+  function buildPrestige() {
+    el.prestigeCats.innerHTML = D.PRESTIGE_CATS.map(c =>
+      '<button data-cat="' + c.id + '" class="' + (c.id === activePrestigeCat ? 'on' : '') + '">' + c.icon + ' ' + c.name + '</button>').join('');
+    const list = el.prestigeList;
+    list.innerHTML = '';
+    for (const n of D.PRESTIGE.filter(p => p.cat === activePrestigeCat)) {
+      const lv = (G.saveData.prestige || {})[n.id] || 0;
+      const maxed = lv >= n.max;
+      const cost = prestigeCost(n, lv);
+      const card = document.createElement('div');
+      card.className = 'pr-card' + (maxed ? ' maxed' : '');
+      let pips = '';
+      for (let i = 0; i < n.max; i++) pips += '<i class="' + (i < lv ? 'on' : '') + '"></i>';
+      card.innerHTML =
+        '<div class="pr-top"><span class="pr-icon">' + n.icon + '</span><span class="pr-name">' + n.name + '</span><span class="pr-lv">Lv.' + lv + '/' + n.max + '</span></div>' +
+        '<div class="pr-desc">' + n.desc + '</div>' +
+        '<div class="pr-foot"><span class="pr-pips">' + pips + '</span>' +
+        '<button ' + (maxed || S.shards < cost ? 'disabled' : '') + '>' + (maxed ? 'MAX' : '💎 ' + fmt(cost)) + '</button></div>';
+      card.querySelector('button').addEventListener('click', () => {
+        if (maxed || S.shards < cost) return;
+        S.shards -= cost;
+        const p = G.saveData.prestige || (G.saveData.prestige = {});
+        p[n.id] = lv + 1;
+        G.saveData.shards = S.shards;
+        G.computeStats(); G.persist();
+        SFX.play('upgrade');
+        buildPrestige(); refreshPrestigeSummary();
       });
+      list.appendChild(card);
     }
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        if (!root.classList.contains('hidden')) {
-          if (this.modalKind === 'result') { e.preventDefault(); return; }
-          this.closeModal(); e.preventDefault();
-        } else if (this.inGame && !this.game.modalOpen) { this.togglePause(); e.preventDefault(); }
-      }
+    refreshPrestigeSummary();
+  }
+  function refreshPrestigeSummary() {
+    const gain = G.prestigeGain();
+    el.prestigeShards.textContent = fmt(S.shards);
+    el.psWave.textContent = Math.max(S.globalWave, G.saveData.bestWave || 0);
+    el.psGain.textContent = fmt(gain);
+    el.psKills.textContent = fmt(S.kills);
+    const can = G.canPrestige();
+    el.btnDoPrestige.disabled = !can;
+    el.prestigeHint.textContent = can ? '재회귀하면 골드·포탑·일반 연구가 초기화되고 회귀석을 받습니다.' : '스테이지 1을 클리어해야 재회귀할 수 있습니다.';
+  }
+  function tryPrestige() {
+    if (!G.canPrestige()) { toast('아직 재회귀할 수 없습니다. 스테이지 1을 클리어하세요.'); return; }
+    const gain = G.prestigeGain();
+    askConfirm('재회귀', '이번 회차의 골드·포탑·일반 연구를 잃고 회귀석 ' + fmt(gain) + '개를 얻습니다. 계속할까요?', () => {
+      const gained = G.doPrestige();
+      hideModals();
+      SFX.play('prestige');
+      UI.toast('재회귀 완료 · 회귀석 +' + fmt(gained));
+      if (settings().cutscene) {
+        playCutscene('prestige', () => { toLobby(); });
+      } else toLobby();
     });
-    window.addEventListener('resize', () => { setTimeout(() => this.game.layout(), 60); });
-  },
+  }
 
-  /* ── screens ────────────────────────────── */
-  syncMenu() {
-    if (!Save.data) return;
-    if (this.els.menuRp) this.els.menuRp.textContent = Save.data.points;
-    if (this.els.menuBest) this.els.menuBest.textContent = Save.data.best.wave;
-    if (this.els.menuWeapons) this.els.menuWeapons.textContent = `${Save.data.unlocked.length} / ${WEAPONS.length}`;
-    if (this.els.menuPerks) {
-      let sum = 0;
-      for (const p of PERKS) sum += Save.perkLevel(p.id);
-      this.els.menuPerks.textContent = `Lv.${sum}`;
+  /* ───────── 유물 ───────── */
+  function buildCodex() {
+    const owned = G.saveData.relics || {};
+    const count = Object.keys(owned).length;
+    el.codexCount.textContent = count + ' / ' + D.RELICS.length;
+    el.codexGrid.innerHTML = '';
+    for (const r of D.RELICS) {
+      const has = !!owned[r.id];
+      const d = document.createElement('div');
+      d.className = 'codex-card r-' + r.rarity + (has ? ' owned' : '');
+      d.innerHTML =
+        '<div class="cc-top"><span class="cc-icon">' + (has ? r.icon : '❔') + '</span><span class="cc-name">' + (has ? r.name : '미발굴 유물') + '</span></div>' +
+        '<div class="cc-rarity r-' + r.rarity + '">' + D.RARITIES[r.rarity].name + '</div>' +
+        '<div class="cc-desc">' + (has ? r.desc : '아직 발견하지 못한 고대 유물입니다.') + '</div>' +
+        (has ? '' : '<div class="cc-lock">🔒</div>');
+      el.codexGrid.appendChild(d);
     }
-  },
+  }
+  function showRelicDrop(relic) {
+    el.relicDrop.classList.remove('hidden');
+    el.relicDropIcon.textContent = relic.icon;
+    el.relicDropRarity.textContent = D.RARITIES[relic.rarity].name + ' 등급 고대 유물';
+    el.relicDropRarity.className = 'r-' + relic.rarity;
+    el.relicDropName.textContent = relic.name;
+    el.relicDropEffect.textContent = relic.desc;
+    relicTimer = 6;
+    window.Render.shake(3);
+    Render.addFloater && 0;
+    if (!(G.saveData.seenCutscenes || {}).relic1 && settings().cutscene) {
+      setTimeout(() => {
+        const anyCut = true;
+        if (anyCut) playCutscene('relic1', () => {});
+      }, 900);
+    }
+    buildCodex();
+    updateLobby();
+  }
 
-  showMenu(game) {
-    this.inGame = false;
-    this.game = game;
-    this.resultState = null;
-    if (this.els.hud) this.els.hud.classList.add('hidden');
-    if (this.els.menu) this.els.menu.classList.remove('hidden');
-    this.closeModal(true);
-    document.body.classList.remove('playing');
-    this.syncMenu();
-  },
-
-  enterGame(game) {
-    this.inGame = true;
-    this.game = game;
-    this.resultState = null;
-    this.modalKind = null;
-    if (this.els.menu) this.els.menu.classList.add('hidden');
-    if (this.els.hud) this.els.hud.classList.remove('hidden');
-    document.body.classList.add('playing');
-    document.body.classList.add('ui-open');
-    this.cache = {};
-    this.hideBoss();
-    this.els.btnSpeed.textContent = '1×';
-    this.els.btnSpeed.classList.remove('on');
-    this.syncModes(game);
-    this.updateWavePreview(true);
-    if (this.els.reloadStrip) this.els.reloadStrip.style.width = '0%';
-    if (this.els.nextTimer) this.els.nextTimer.textContent = '';
-    this.sync(game);
-  },
-
-  openDifficulty() {
-    const cards = DIFFICULTIES.map(d => `
-      <button class="diff-card ${d.id}" data-diff="${d.id}">
-        <b style="color:${d.color}">${d.name}</b>
-        <div class="d-d">${d.desc}</div>
-        <div class="d-m">${d.mods.map(m => `<span>${m}</span>`).join('')}</div>
-        <div class="go">▶ 시작</div>
-      </button>`).join('');
-    this.openModal(`
-      <div class="modal-head">
-        <div>
-          <h2>난이도 선택</h2>
-          <p class="tagline2">군주의 대군이 몰려옵니다. 15 웨이브를 버티면 승리.</p>
-        </div>
-        <button class="modal-close" data-close>✕</button>
-      </div>
-      <div class="diff-grid">${cards}</div>
-      <div class="modal-actions">
-        <button class="btn ghost" data-close>돌아가기</button>
-      </div>`);
-    this.els.modalCard.querySelectorAll('[data-diff]').forEach(b => {
-      b.addEventListener('click', () => {
-        const diff = DIFF_BY_ID[b.dataset.diff];
-        Sfx.init();
-        this.closeModal();
-        this.game.startRun(diff);
+  /* ───────── 스토리 ───────── */
+  function buildStory() {
+    const seen = G.saveData.seenCutscenes || {};
+    el.storyList.innerHTML = '';
+    for (const s of window.Cutscene.list()) {
+      const d = document.createElement('div');
+      d.className = 'story-item';
+      d.innerHTML = '<div class="si-t">' + s.title + '</div><div class="si-s">' + s.shots + '컷 · ' + (seen[s.id] ? '열람함' : '미열람') + '</div><button>재생 ▶</button>';
+      d.querySelector('button').addEventListener('click', () => {
+        el.storyModal.classList.add('hidden');
+        playCutscene(s.id, () => { if (S.phase === 'lobby') showLobby(); });
       });
-    });
-    this.bindModalClose();
-  },
-
-  /* ── HUD sync ───────────────────────────── */
-  sync(game) {
-    if (!this.inGame || !game) return;
-    const e = this.els;
-    const set = (el, v) => { if (el && this.cache[el.id] !== v) { el.textContent = v; this.cache[el.id] = v; } };
-    const css = (el, prop, v) => { if (el && this.cache[el.id + prop] !== v) { el.style[prop] = v; this.cache[el.id + prop] = v; } };
-
-    set(e.gold, Math.floor(game.gold));
-    set(e.scrap, Math.floor(game.scrap));
-    set(e.rp, Save.data.points);
-    set(e.hpText, Math.max(0, Math.ceil(game.villageHp)));
-    css(e.hpBar, 'width', `${clamp(game.villageHp / game.villageMax, 0, 1) * 100}%`);
-    const hpRatio = game.villageHp / game.villageMax;
-    set(e.gateState, hpRatio > 0.7 ? '성벽 안정' : hpRatio > 0.4 ? '성벽 손상' : hpRatio > 0.15 ? '성벽 위험' : '성벽 붕괴 직전');
-    set(e.waveNum, game.waveIndex + 1);
-    set(e.waveMax, `/ ${MAX_WAVE}`);
-    let phase = '준비';
-    if (game.state === 'result') phase = '종료';
-    else if (game.phase === 'wave') phase = '전투 중';
-    else if (game.phase === 'prep') phase = `준비 ${Math.ceil(Math.max(0, game.prepTime))}s`;
-    set(e.wavePhase, phase);
-    e.wavePhase && e.wavePhase.classList.toggle('hot', game.phase === 'wave');
-
-    let progress = 0;
-    if (game.phase === 'wave') {
-      const total = Math.max(1, game.waveTotal);
-      progress = (game.spawned - game.enemies.length) / total;
-      progress = clamp(progress, 0, 1);
-    } else if (game.phase === 'prep') {
-      progress = clamp(1 - game.prepTime / 24, 0, 1);
+      el.storyList.appendChild(d);
     }
-    css(e.waveProgress, 'width', `${progress * 100}%`);
+  }
 
-    // 다음 웨이브 버튼
-    if (e.btnNextWave) {
-      const disabled = game.phase === 'wave' || game.state !== 'playing';
-      if (e.btnNextWave.disabled !== disabled) e.btnNextWave.disabled = disabled;
-      const label = game.phase === 'wave' ? '전투 중' : '다음 웨이브';
-      if (this.cache.nextLabel !== label) {
-        this.cache.nextLabel = label;
-        e.btnNextWave.innerHTML = `${label} <span id="nextTimer"></span>`;
-        e.nextTimer = document.getElementById('nextTimer');
-      }
-      if (e.nextTimer) set(e.nextTimer, game.phase === 'prep' ? `${Math.ceil(Math.max(0, game.prepTime))}s` : '');
+  /* ───────── 치트 ───────── */
+  function openCheat() {
+    refreshModalPause();
+    el.cheatModal.classList.remove('hidden');
+    el.cheatGold.value = Math.round(S.gold);
+    el.cheatRp.value = Math.round(S.rp);
+    el.cheatShards.value = Math.round(S.shards);
+    if (!el.cheatRelicPick.dataset.ready) {
+      el.cheatRelicPick.innerHTML = D.RELICS.map(r => '<option value="' + r.id + '">' + r.name + ' (' + D.RARITIES[r.rarity].name + ')</option>').join('');
+      el.cheatRelicPick.dataset.ready = '1';
     }
-
-    // 재장전 스트립
-    let rp = 0;
-    if (game.hero.reloading) rp = 1 - game.hero.reloadT / Math.max(0.001, game.hero.reloadMax);
-    else rp = 0;
-    css(e.reloadStrip, 'width', `${rp * 100}%`);
-
-    // 무기 슬롯
-    this.syncWeapons(game);
-    this.syncBuild(game);
-    this.syncSkills(game);
-
-    // 회복 버튼
-    if (e.btnRepairWall) {
-      const can = game.villageHp < game.villageMax && game.gold >= 60;
-      if (e.btnRepairWall.disabled !== !can) e.btnRepairWall.disabled = !can;
+    syncOptions();
+    SFX.play('click');
+  }
+  function doCheat(action) {
+    const num = v => parseInt(v, 10) || 0;
+    switch (action) {
+      case 'gold': G.cheat.gold(num(el.cheatGold.value)); break;
+      case 'goldAdd': G.cheat.addGold(100000); break;
+      case 'rp': G.cheat.rp(num(el.cheatRp.value)); break;
+      case 'rpAdd': G.cheat.addRp(10000); break;
+      case 'shards': G.cheat.shards(num(el.cheatShards.value)); break;
+      case 'shardsAdd': G.cheat.addShards(1000); break;
+      case 'wave1': G.cheat.waveJump(1); break;
+      case 'wave5': G.cheat.waveJump(5); break;
+      case 'waveSkip': G.cheat.waveJump(99); break;
+      case 'stage1': G.cheat.stageJump(1); break;
+      case 'stage5': G.cheat.stageJump(5); break;
+      case 'killAll': G.cheat.killAll(); break;
+      case 'invincible': G.cheat.invincible(!S.cheat.invincible); toast('기지 무적: ' + (S.cheat.invincible ? 'ON' : 'OFF')); break;
+      case 'win':
+        G.cheat.win();
+        break;
+      case 'unlockAll': G.cheat.unlockAllResearch(); toast('전체 연구 해금'); break;
+      case 'clearResearch': G.cheat.clearResearch(); toast('연구 초기화'); break;
+      case 'relicDrop': G.grantRandomRelic('boss'); break;
+      case 'relicAll': G.cheat.giveAllRelics(); toast('전체 유물 지급'); buildCodex(); break;
+      case 'relicPick': G.cheat.giveRelic(el.cheatRelicPick.value); buildCodex(); break;
     }
+    el.cheatGold.value = Math.round(S.gold);
+    el.cheatRp.value = Math.round(S.rp);
+    el.cheatShards.value = Math.round(S.shards);
+    updateHud(); updateLobby();
+    SFX.play('click');
+  }
 
-    // 보스 바
-    if (game.bossRef && !game.bossRef.dead) {
-      e.bossBar.classList.remove('hidden');
-      const r = clamp(game.bossRef.hp / game.bossRef.maxHp, 0, 1);
-      css(e.bossFill, 'width', `${r * 100}%`);
-      set(e.bossName, `${game.bossRef.def.name}  ${Math.ceil(game.bossRef.hp)} / ${game.bossRef.maxHp}`);
-    } else if (!e.bossBar.classList.contains('hidden')) {
-      this.hideBoss();
+  /* ───────── 옵션 ───────── */
+  function syncOptions() {
+    const s = settings();
+    const set = (boxId, val) => {
+      const box = $(boxId); if (!box) return;
+      box.querySelectorAll('button').forEach(b => {
+        b.classList.toggle('on', String(b.dataset.v) === String(val));
+      });
+    };
+    set('optUnitScale', s.unitScale);
+    set('optZoom', s.zoomBase);
+    set('optFx', s.effects);
+    set('optDmg', s.dmgNumbers ? '1' : '0');
+    set('optShake', s.shake ? '1' : '0');
+    set('optSound', s.sound ? '1' : '0');
+    set('optCutscene', s.cutscene ? '1' : '0');
+    set('cheatRelicBoost', S.cheat.relicBoost || 1);
+  }
+
+  /* ───────── 스테이지 ───────── */
+  function buildStageGrid() {
+    const max = G.saveData.maxStage || 1;
+    el.stageGrid.innerHTML = '';
+    for (let s = 1; s <= Math.max(10, max + 1); s++) {
+      const unlocked = s <= max;
+      const cleared = s < max || (G.saveData.stagesCleared || 0) >= s;
+      const d = document.createElement('button');
+      d.className = 'stage-card' + (unlocked ? ' unlocked' : '') + (cleared ? ' cleared' : '');
+      d.dataset.stage = s;
+      d.disabled = !unlocked;
+      d.innerHTML = '<b>STAGE ' + s + '</b><span>' + D.stageName(s) + '</span>' +
+        '<div class="sc-lock">' + (unlocked ? (cleared ? '클리어' : '도전 가능') : '🔒 잠김') + '</div>';
+      el.stageGrid.appendChild(d);
     }
+  }
 
-    // 웨이브 미리보기 갱신
-    this.updateWavePreview(false);
-  },
+  /* ───────── 모달 열기 ───────── */
+  function openTech() {
+    refreshModalPause();
+    el.techModal.classList.remove('hidden');
+    buildTechTree();
+    el.techScroll.scrollTop = 0; el.techScroll.scrollLeft = window.innerWidth < 720 ? 0 : 4 * 176;
+    SFX.play('click');
+  }
+  function openPrestige() {
+    refreshModalPause();
+    el.prestigeModal.classList.remove('hidden');
+    buildPrestige();
+    refreshPrestigeSummary();
+    SFX.play('click');
+  }
+  function openCodex() {
+    refreshModalPause();
+    el.codexModal.classList.remove('hidden');
+    buildCodex();
+    // 새 유물 확인 표시
+    if (G.saveData.relicNew) { G.saveData.relicNew = {}; persist(); }
+    SFX.play('click');
+  }
+  function openStory() {
+    refreshModalPause();
+    el.storyModal.classList.remove('hidden');
+    buildStory();
+    SFX.play('click');
+  }
+  function openOptions() {
+    refreshModalPause();
+    el.optionsModal.classList.remove('hidden');
+    syncOptions();
+    SFX.play('click');
+  }
+  function openStageSelect() {
+    refreshModalPause();
+    el.stageModal.classList.remove('hidden');
+    buildStageGrid();
+    SFX.play('click');
+  }
+  function hideModals() {
+    document.querySelectorAll('.overlay.modal').forEach(m => m.classList.add('hidden'));
+    el.lobby.classList.add('hidden');
+    refreshModalPause();
+  }
 
-  syncWeapons(game) {
-    const wrap = this.els.weaponSlots;
-    if (!wrap) return;
-    const cur = game.hero.weaponId;
-    const slots = wrap.children;
-    for (let i = 0; i < slots.length; i++) {
-      const el = slots[i];
-      const w = WEAPONS[i];
-      const owned = Save.hasWeapon(w.id);
-      const active = cur === w.id;
-      el.classList.toggle('active', active);
-      el.classList.toggle('locked', !owned);
-      const ammoEl = el.querySelector('.ammo');
-      if (ammoEl) {
-        const txt = owned ? `${game.hero.mags[w.id] | 0}` : '🔒';
-        if (ammoEl.textContent !== txt) ammoEl.textContent = txt;
-      }
+  /* ───────── 클리어/패배 ───────── */
+  function showStageClear(d) {
+    el.scTitle.textContent = 'STAGE ' + d.stage + ' 클리어';
+    el.scSub.textContent = D.stageName(d.stage) + '을(를) 지켜냈습니다. 다음 스테이지의 적은 조금 더 강해집니다.';
+    el.scGold.textContent = '+' + fmt(d.gold);
+    el.scRp.textContent = '+' + fmt(d.rp);
+    el.scShards.textContent = fmt(d.shards);
+    el.stageClearModal.classList.remove('hidden');
+    banner('스테이지 클리어', D.stageName(d.stage) + ' 방어 성공!', 2800);
+    SFX.play('victory');
+  }
+  function showDefeat(d) {
+    el.defeatSub.textContent = 'STAGE ' + d.stage + ' · WAVE ' + S.wi + ' · 처치 ' + fmt(S.kills);
+    el.dfKills.textContent = fmt(S.kills);
+    el.dfShards.textContent = fmt(G.prestigeGain());
+    el.defeatModal.classList.remove('hidden');
+  }
+
+  /* ───────── 확인창 ───────── */
+  function askConfirm(title, msg, cb) {
+    let m = $('confirmModal');
+    if (!m) {
+      m = document.createElement('div');
+      m.id = 'confirmModal';
+      m.className = 'overlay modal hidden';
+      m.innerHTML = '<div class="modal-box confirm-box"><h3 id="cfTitle"></h3><p id="cfMsg"></p><div class="cf-actions"><button id="cfNo" class="btn ghost">취소</button><button id="cfYes" class="btn primary">확인</button></div></div>';
+      document.body.appendChild(m);
+      $('cfNo').addEventListener('click', () => { m.classList.add('hidden'); setTimeout(refreshModalPause, 0); });
+      $('cfYes').addEventListener('click', () => { m.classList.add('hidden'); setTimeout(refreshModalPause, 0); if (confirmCb) confirmCb(); });
     }
-  },
+    $('cfTitle').textContent = title;
+    $('cfMsg').textContent = msg;
+    confirmCb = cb;
+    m.classList.remove('hidden');
+    refreshModalPause();
+  }
 
-  syncBuild(game) {
-    document.querySelectorAll('.build-btn').forEach(btn => {
-      const mode = btn.dataset.build;
-      let cost = 0;
-      if (TURRETS[mode]) cost = TURRETS[mode].cost;
-      else if (mode === 'barricade') cost = 55;
-      else if (mode === 'repair') cost = 30;
-      btn.classList.toggle('active', game.buildMode === mode);
-      const locked = TURRETS[mode] && !Save.hasTurret(mode);
-      btn.classList.toggle('hidden', !!locked);
-      btn.classList.toggle('broke', game.gold < cost);
-    });
-  },
+  /* ───────── 알림 ───────── */
+  function toast(msg) {
+    el.toast.textContent = msg;
+    el.toast.classList.add('show');
+    toastTimer = 3.2;
+  }
+  function banner(title, sub, ms) {
+    el.bannerTitle.textContent = title;
+    el.bannerSub.textContent = sub || '';
+    el.banner.classList.add('show');
+    bannerTimer = (ms || 2200) / 1000;
+  }
 
-  syncSkills(game) {
-    document.querySelectorAll('.skill-btn[data-skill]').forEach(btn => {
-      const id = btn.dataset.skill;
-      const s = game.skills[id];
-      const cd = btn.querySelector('.cd');
-      if (s) {
-        const ratio = clamp(s.cd / Math.max(0.001, s.max), 0, 1);
-        if (cd) cd.style.transform = `scaleY(${ratio})`;
-        btn.classList.toggle('ready', s.cd <= 0);
-        btn.classList.toggle('aiming', game.skillAim === id);
-      }
-    });
-    if (this.els.btnAutoAim) this.els.btnAutoAim.classList.toggle('on', game.autoAim);
-  },
+  function cycleSpeed() {
+    const speeds = [1, 2, 3, 4];
+    const i = speeds.indexOf(S.speed);
+    S.speed = speeds[(i + 1) % speeds.length];
+    SFX.play('click');
+    toast('배속 ' + S.speed + '×');
+  }
+  function togglePause() {
+    S.paused = !S.paused;
+    if (S.paused && S.phase !== 'lobby') banner('일시정지', 'Space 또는 ❚❚ 로 재개', 1600);
+    else if (S.phase !== 'lobby') banner('재개', '', 900);
+    SFX.play('click');
+  }
 
-  syncModes(game) {
-    this.syncBuild(game);
-    this.syncSkills(game);
-  },
-
-  updateWavePreview(force) {
-    const g = this.game;
-    if (!g || !this.els.wavePreview) return;
-    const key = `${g.waveIndex}-${g.diff.id}-${g.phase}-${g.state}-${g.spawned}-${g.enemies.length}`;
-    if (!force && this.cache.previewKey === key) return;
-    if (!force && g.phase === 'wave' && this.cache.previewKey && this.cache.previewKey.split('-')[2] === 'wave') {
-      // 전투 중에는 남은 적 수만 갱신
-      const remain = g.spawnQueue.length + g.enemies.length;
-      const txt = `<span class="chip">⚔️ 남은 적 <span class="c-n">${remain}</span></span>`;
-      if (this.cache.previewHTML !== txt) { this.els.wavePreview.innerHTML = txt; this.cache.previewHTML = txt; }
-      this.cache.previewKey = key;
+  /* ───────── 키보드 ───────── */
+  function onKey(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    if (window.Cutscene && window.Cutscene.isActive()) return;
+    const k = e.key.toLowerCase();
+    if (k === 'escape') {
+      if (!el.techModal.classList.contains('hidden') || !el.prestigeModal.classList.contains('hidden') ||
+          !el.codexModal.classList.contains('hidden') || !el.optionsModal.classList.contains('hidden') ||
+          !el.storyModal.classList.contains('hidden') || !el.stageModal.classList.contains('hidden') ||
+          !el.cheatModal.classList.contains('hidden') || !el.stageClearModal.classList.contains('hidden') ||
+          !el.defeatModal.classList.contains('hidden')) {
+        hideModals();
+      } else { clearSelection(); togglePause(); }
       return;
     }
-    this.cache.previewKey = key;
-    if (g.state === 'result' || g.phase === 'wave') {
-      const remain = g.spawnQueue.length + g.enemies.length;
-      const html = `<span class="chip">⚔️ 남은 적 <span class="c-n">${remain}</span></span>`;
-      if (this.cache.previewHTML !== html) { this.els.wavePreview.innerHTML = html; this.cache.previewHTML = html; }
-      return;
-    }
-    const comp = waveComposition(g.waveIndex, g.diff);
-    const html = comp.slice(0, 7).map(c => {
-      const def = ENEMIES[c.id];
-      return `<span class="chip ${def.boss ? 'boss' : ''}" title="${def.name}"><span class="c-ico">${def.ico}</span>${def.name} <span class="c-n">${c.n}</span></span>`;
-    }).join('') + (comp.length > 7 ? `<span class="chip">+${comp.length - 7}</span>` : '');
-    if (this.cache.previewHTML !== html) { this.els.wavePreview.innerHTML = html; this.cache.previewHTML = html; }
-  },
+    if (S.phase === 'lobby' || S.phase === 'stageclear' || S.phase === 'defeat') return;
+    if (k === ' ') { e.preventDefault(); togglePause(); }
+    else if (k === 't') openTech();
+    else if (k === 'p') openPrestige();
+    else if (k === 'o') openOptions();
+    else if (k >= '1' && k <= '4') { S.speed = parseInt(k, 10); toast('배속 ' + S.speed + '×'); }
+    else if (k === 'q') { buildType = buildType ? null : 'gatling'; window.Render.setBuildType(buildType); updateBuildBar(); }
+  }
 
-  banner(title, sub) {
-    const b = this.els.banner;
-    if (!b) return;
-    this.els.bannerTitle.textContent = title;
-    this.els.bannerSub.textContent = sub || '';
-    b.classList.add('show');
-    clearTimeout(this.bannerTimer);
-    this.bannerTimer = setTimeout(() => b.classList.remove('show'), 2600);
-  },
-
-  toast(msg, type) {
-    const t = this.els.toast;
-    if (!t) return;
-    t.textContent = msg;
-    t.className = 'toast show' + (type ? ' ' + type : '');
-    clearTimeout(this.toastTimer);
-    this.toastTimer = setTimeout(() => { t.className = 'toast' + (type ? ' ' + type : ''); }, 2200);
-  },
-
-  combo(n) {
-    const c = this.els.combo;
-    if (!c) return;
-    c.textContent = `연속 처치 × ${n}`;
-    c.classList.add('show');
-    clearTimeout(this.comboData.t);
-    this.comboData.t = setTimeout(() => c.classList.remove('show'), 1400);
-  },
-
-  showBoss(def) {
-    if (!this.els.bossBar) return;
-    this.els.bossName.textContent = def.name;
-    this.els.bossBar.classList.remove('hidden');
-  },
-
-  hideBoss() {
-    if (this.els.bossBar) this.els.bossBar.classList.add('hidden');
-  },
-
-  /* ── modals ─────────────────────────────── */
-  openModal(html, kind) {
-    const root = this.els.modalRoot;
-    if (!root) return;
-    this.modalKind = kind || 'normal';
-    this.els.modalCard.innerHTML = html;
-    root.classList.remove('hidden');
-    if (this.inGame && this.game) {
-      this.game.modalOpen = true;
-      this.game.paused = true;
-      this.game.firing = false;
-      this.game.touchMove = 0;
-    }
-    this.bindModalClose();
-  },
-
-  closeModal(silent) {
-    const root = this.els.modalRoot;
-    if (!root || root.classList.contains('hidden')) {
-      if (this.inGame && this.game && !silent) { this.game.modalOpen = false; this.game.paused = false; }
-      return;
-    }
-    const kind = this.modalKind;
-    this.modalKind = null;
-    root.classList.add('hidden');
-    this.els.modalCard.innerHTML = '';
-    if (this.inGame && this.game) {
-      this.game.modalOpen = false;
-      if (this.game.state === 'playing') this.game.paused = false;
-    }
-    // 결과창에서 연구소를 열었다가 닫으면 결과창으로 돌아간다
-    if (!silent && kind !== 'result' && this.inGame && this.resultState && this.game && this.game.state === 'result') {
-      this.showResult(this.game, this.resultState.win);
-    }
-  },
-
-  bindModalClose() {
-    if (!this.els.modalCard) return;
-    this.els.modalCard.querySelectorAll('[data-close]').forEach(b => {
-      if (b.__closeBound) return;
-      b.__closeBound = true;
-      b.addEventListener('click', () => this.closeModal());
-    });
-  },
-
-  togglePause() {
-    if (!this.inGame) return;
-    if (this.game.state !== 'playing') return;
-    this.openPause();
-  },
-
-  openPause() {
-    const g = this.game;
-    this.openModal(`
-      <div class="modal-head">
-        <div><h2>일시정지</h2><p class="tagline2">${this.diffName(g.diff)} · WAVE ${g.waveIndex + 1} / ${MAX_WAVE}</p></div>
-        <button class="modal-close" data-close>✕</button>
-      </div>
-      <div class="stats-grid">
-        <div class="stat-box"><span>처치</span><b>${g.kills}</b></div>
-        <div class="stat-box"><span>골드</span><b>🪙 ${Math.floor(g.gold)}</b></div>
-        <div class="stat-box"><span>고철</span><b>⚙️ ${Math.floor(g.scrap)}</b></div>
-        <div class="stat-box"><span>설계도</span><b>📘 ${Save.data.points}</b></div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn ghost" id="pmQuit">전투 포기</button>
-        <button class="btn ghost" id="pmSettings">⚙ 설정</button>
-        <button class="btn primary" data-close>계속하기</button>
-      </div>`);
-    document.getElementById('pmSettings').addEventListener('click', () => { this.openSettings(); });
-    document.getElementById('pmQuit').addEventListener('click', () => {
-      this.closeModal(true);
-      this.game.paused = false;
-      this.game.modalOpen = false;
-      this.game.quitToMenu();
-    });
-  },
-
-  diffName(d) { return d ? d.name : '보통'; },
-
-  openSettings() {
-    const s = Save.data.settings;
-    const row = (key, title, sub) => `
-      <div class="setting-row">
-        <div><div>${title}</div><small>${sub}</small></div>
-        <button class="switch ${s[key] ? 'on' : ''}" data-toggle="${key}" aria-label="${title}"></button>
-      </div>`;
-    this.openModal(`
-      <div class="modal-head">
-        <div><h2>설정</h2><p class="tagline2">전투 감각과 편의 기능을 조절합니다.</p></div>
-        <button class="modal-close" data-close>✕</button>
-      </div>
-      <div>
-        ${row('shake', '화면 흔들림', '발사·폭발 시 카메라 셰이크')}
-        ${row('sound', '사운드', '총성·폭발·타격음')}
-        ${row('autoAim', '자동 조준', '가장 위험한 적을 자동으로 조준·사격')}
-        ${row('dmgText', '피해 수치 표시', '적 피격 시 데미지 숫자 표시')}
-      </div>
-      <div class="modal-actions">
-        <button class="btn ghost" data-close>닫기</button>
-      </div>`);
-    this.els.modalCard.querySelectorAll('[data-toggle]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const key = btn.dataset.toggle;
-        s[key] = !s[key];
-        btn.classList.toggle('on', s[key]);
-        Save.save();
-        this.applySettings();
-        Sfx.init(); Sfx.ui();
-      });
-    });
-    this.bindModalClose();
-  },
-
-  applySettings() {
-    const s = Save.data.settings;
-    Sfx.setMuted(!s.sound);
-    if (this.game) this.game.autoAim = !!s.autoAim;
-  },
-
-  openHelp() {
-    const rows = [
-      ['마우스 / 터치', '전장을 조준하고 누르고 있으면 사격. 움직이며 연사 가능.'],
-      ['WASD / ← →', '영웅을 성벽 앞에서 좌우로 이동. 모바일은 화면 좌우 ◀ ▶ 버튼.'],
-      ['1 ~ 9', '해금한 무기로 즉시 교체.'],
-      ['R', '재장전 (자동 재장전도 됩니다).'],
-      ['Q / E', '수류탄 / 집속 포격 → 원하는 지점을 탭해 발동.'],
-      ['B / V / N', '센트리 / 화염 포탑 / 박격포 건설.'],
-      ['M', '바리케이드 설치. 전장 중앙에만 가능.'],
-      ['F', '자동 조준 ON/OFF. 켜두면 탭은 건설·스킬에 사용.'],
-      ['Space', '일시정지. S는 1×/2× 배속. Esc는 모드 취소·메뉴.'],
-      ['포탑', '설치 지점(원형 패드)을 탭해 건설. 설치된 포탑을 탭하면 강화/철거.'],
-      ['방어선', '적은 바리케이드와 성벽을 공격합니다. 성벽이 0이 되면 패배.'],
-      ['설계도 📘', '웨이브를 막을 때마다 획득. 연구소에서 새 무기·영구 강화에 사용.'],
-    ];
-    this.openModal(`
-      <div class="modal-head">
-        <div><h2>조작법</h2><p class="tagline2">중세 마을을 지키는 현대 병기 사용 설명서</p></div>
-        <button class="modal-close" data-close>✕</button>
-      </div>
-      <ul class="help-list">
-        ${rows.map(r => `<li><span class="k">${r[0]}</span><span class="v">${r[1]}</span></li>`).join('')}
-      </ul>
-      <div class="modal-actions"><button class="btn primary" data-close>알겠습니다</button></div>`);
-    this.bindModalClose();
-  },
-
-  /* ── research lab ───────────────────────── */
-  openLab() {
-    this.labTab = this.labTab || 'weapons';
-    this.renderLab();
-  },
-
-  renderLab() {
-    const tab = this.labTab;
-    const pts = Save.data.points;
-    const weaponsHtml = WEAPONS.map(w => {
-      const owned = Save.hasWeapon(w.id);
-      return `
-        <div class="card ${owned ? 'owned' : ''}">
-          <div class="c-t"><span>${w.short} · ${w.name}</span><span style="color:#ffd479;font-size:11px">${owned ? '보유' : '📘 ' + w.cost}</span></div>
-          <div class="c-d">${w.desc}</div>
-          <div class="c-e">피해 ${w.dmg}${w.pellets > 1 ? ` ×${w.pellets}` : ''} · 연사 ${w.rpm}/분 · 탄창 ${w.mag}${w.pierce ? ` · 관통 ${w.pierce}` : ''}${w.splash ? ` · 폭발 ${w.splash}` : ''}</div>
-          ${owned
-            ? '<button class="buy" disabled>해금 완료</button>'
-            : `<button class="buy" data-unlock="${w.id}" ${pts < w.cost ? 'disabled' : ''}>📘 ${w.cost} 로 해금</button>`}
-        </div>`;
-    }).join('');
-
-    const railHtml = (() => {
-      const owned = Save.hasTurret('rail');
-      return `
-        <div class="card ${owned ? 'owned' : ''}">
-          <div class="c-t"><span>⚡ 레일 포탑</span><span style="color:#ffd479;font-size:11px">${owned ? '보유' : '📘 8'}</span></div>
-          <div class="c-d">전자기 가속으로 일직선의 적을 관통하는 상위 포탑.</div>
-          <div class="c-e">피해 150 · 관통 · 사거리 540 · 건설 🪙320</div>
-          ${owned ? '<button class="buy" disabled>해금 완료</button>'
-            : `<button class="buy" data-unlock-turret="rail" ${pts < 8 ? 'disabled' : ''}>📘 8 로 해금</button>`}
-        </div>`;
-    })();
-
-    const perksHtml = PERKS.map(p => {
-      const lv = Save.perkLevel(p.id);
-      const maxed = lv >= p.max;
-      const cost = Save.perkCost(p);
-      const pips = Array.from({ length: p.max }, (_, i) => `<i class="${i < lv ? 'on' : ''}"></i>`).join('');
-      return `
-        <div class="card ${maxed ? 'maxed' : ''}">
-          <div class="c-t"><span>${p.ico} ${p.name}</span><span class="lvl">Lv.${lv} / ${p.max}</span></div>
-          <div class="c-d">${p.effect}</div>
-          <div class="c-e">현재 효과: ${lv ? p.fmt(lv) : '없음'}</div>
-          <div class="pips">${pips}</div>
-          ${maxed ? '<button class="buy" disabled>최대 레벨</button>'
-            : `<button class="buy" data-perk="${p.id}" ${pts < cost ? 'disabled' : ''}>📘 ${cost} 강화</button>`}
-        </div>`;
-    }).join('');
-
-    this.openModal(`
-      <div class="modal-head">
-        <div>
-          <h2>🔬 연구소</h2>
-          <p class="tagline2">설계도로 영구 해금·강화. 전투가 끝나도 유지됩니다.</p>
-        </div>
-        <div class="pts">📘 ${pts}</div>
-      </div>
-      <div class="tabs">
-        <button class="tab ${tab === 'weapons' ? 'on' : ''}" data-tab="weapons">무기 해금</button>
-        <button class="tab ${tab === 'perks' ? 'on' : ''}" data-tab="perks">영구 강화</button>
-        <button class="tab ${tab === 'system' ? 'on' : ''}" data-tab="system">진행 관리</button>
-      </div>
-      ${tab === 'weapons' ? `<div class="grid cards">${weaponsHtml}${railHtml}</div>`
-        : tab === 'perks' ? `<div class="grid cards">${perksHtml}</div>`
-        : `<div>
-            <div class="setting-row"><div><div>최고 도달 웨이브</div><small>최다 처치 ${Save.data.best.kills}</small></div><b>WAVE ${Save.data.best.wave}</b></div>
-            <div class="setting-row"><div><div>누적 전투</div><small>승리 ${Save.data.stats.wins}회</small></div><b>${Save.data.stats.runs}회</b></div>
-            <div class="setting-row"><div><div>진행 초기화</div><small>설계도·해금·영구 강화가 모두 사라집니다.</small></div>
-              <button class="reset-btn" id="labReset">${this.resetArmed ? '정말 초기화?' : '초기화'}</button></div>
-          </div>`}
-      <div class="modal-actions">
-        <button class="btn ghost" data-close>닫기</button>
-        ${this.inGame ? (this.resultState ? '<button class="btn" id="labBackResult">결과로 돌아가기</button>' : '') : '<button class="btn primary" id="labStart">전투 시작</button>'}
-      </div>`, 'lab');
-
-    this.els.modalCard.querySelectorAll('[data-tab]').forEach(b => {
-      b.addEventListener('click', () => { Sfx.ui(); this.labTab = b.dataset.tab; this.renderLab(); });
-    });
-    this.els.modalCard.querySelectorAll('[data-unlock]').forEach(b => {
-      b.addEventListener('click', () => {
-        this.resetArmed = false;
-        if (Save.unlockWeapon(b.dataset.unlock)) {
-          Sfx.build(); this.toast('무기 해금 완료', 'gold'); this.syncMenu(); this.renderLab();
-        } else { Sfx.deny(); this.toast('설계도가 부족합니다', 'warn'); }
-      });
-    });
-    this.els.modalCard.querySelectorAll('[data-unlock-turret]').forEach(b => {
-      b.addEventListener('click', () => {
-        if (Save.unlockTurret(b.dataset.unlockTurret)) {
-          Sfx.build(); this.toast('레일 포탑 해금 완료', 'gold'); this.renderLab();
-        } else { Sfx.deny(); this.toast('설계도가 부족합니다', 'warn'); }
-      });
-    });
-    this.els.modalCard.querySelectorAll('[data-perk]').forEach(b => {
-      b.addEventListener('click', () => {
-        this.resetArmed = false;
-        if (Save.buyPerk(b.dataset.perk)) {
-          Sfx.build(); this.toast('영구 강화 완료', 'gold'); this.syncMenu(); this.renderLab();
-        } else { Sfx.deny(); this.toast('설계도가 부족합니다', 'warn'); }
-      });
-    });
-    const rs = document.getElementById('labReset');
-    if (rs) rs.addEventListener('click', () => {
-      if (!this.resetArmed) {
-        this.resetArmed = true;
-        rs.textContent = '정말 초기화?';
-        rs.style.background = 'rgba(255,93,93,.25)';
-        return;
-      }
-      Save.reset();
-      this.resetArmed = false;
-      this.syncMenu();
-      this.toast('진행이 초기화되었습니다', 'warn');
-      this.renderLab();
-    });
-    const st = document.getElementById('labStart');
-    if (st) st.addEventListener('click', () => { this.closeModal(); this.openDifficulty(); });
-    const br = document.getElementById('labBackResult');
-    if (br) br.addEventListener('click', () => this.closeModal());
-    this.bindModalClose();
-  },
-
-  /* ── upgrade ────────────────────────────── */
-  openUpgrade() {
-    if (!this.inGame || this.game.state !== 'playing') return;
-    const g = this.game;
-    const w = WEAPON_BY_ID[g.hero.weaponId];
-    const st = g.stats(w);
-    const p = g.upg[w.id];
-    const rows = Object.keys(WUPG).map(key => {
-      const def = WUPG[key];
-      const lv = p[key];
-      const maxed = lv >= def.max;
-      const cost = def.cost(lv);
-      const pips = Array.from({ length: def.max }, (_, i) => `<i class="${i < lv ? 'on' : ''}"></i>`).join('');
-      const val = key === 'dmg' ? `${Math.round(st.dmg)}` : key === 'rate' ? `${Math.round(st.rpm)}/분` :
-        key === 'pierce' ? `${st.pierce}` : `${st.reload.toFixed(2)}s`;
-      return `
-        <div class="upg-row">
-          <div class="u-info">
-            <b>${def.icon} ${def.name} <span class="lvl">Lv.${lv}/${def.max}</span></b>
-            <small>${def.effect} · 현재 ${val}</small>
-            <div class="pips">${pips}</div>
-          </div>
-          ${maxed ? '<button class="upg-buy" disabled>MAX</button>'
-            : `<button class="upg-buy" data-upg="${key}" ${g.scrap < cost ? 'disabled' : ''}>⚙️ ${cost}</button>`}
-        </div>`;
-    }).join('');
-
-    this.openModal(`
-      <div class="modal-head">
-        <div><h2>무기 강화</h2><p class="tagline2">${w.name} · 전투 중에만 적용되는 임시 강화</p></div>
-        <div class="pts">⚙️ ${Math.floor(g.scrap)}</div>
-      </div>
-      <div>${rows}</div>
-      <div class="modal-actions">
-        <button class="btn ghost" data-close>닫기</button>
-        <button class="btn primary" id="upgClose">계속 전투</button>
-      </div>`);
-    this.els.modalCard.querySelectorAll('[data-upg]').forEach(b => {
-      b.addEventListener('click', () => {
-        if (g.upgradeWeapon(w.id, b.dataset.upg)) this.openUpgrade();
-      });
-    });
-    const uc = document.getElementById('upgClose');
-    if (uc) uc.addEventListener('click', () => this.closeModal());
-    this.bindModalClose();
-  },
-
-  openTurretPanel(game, b) {
-    if (!b) return;
-    const def = TURRETS[b.type];
-    const dmg = def.dmg * (1 + 0.12 * Save.perkLevel('turretDmg')) * (1 + 0.2 * (b.lv - 1));
-    const cost = turretUpgradeCost(b.lv);
-    const maxed = b.lv >= TURRET_MAX_LV;
-    this.openModal(`
-      <div class="modal-head">
-        <div><h2>${def.name} <span class="lvl">Lv.${b.lv}</span></h2><p class="tagline2">${def.desc}</p></div>
-        <button class="modal-close" data-close>✕</button>
-      </div>
-      <div class="stats-grid">
-        <div class="stat-box"><span>피해/발사</span><b>${dmg.toFixed(1)}</b></div>
-        <div class="stat-box"><span>연사</span><b>${(60 / def.interval).toFixed(1)}/초</b></div>
-        <div class="stat-box"><span>사거리</span><b>${Math.round(def.range * (1 + 0.05 * (b.lv - 1)))}</b></div>
-        <div class="stat-box"><span>내구도</span><b>${Math.ceil(b.hp)} / ${b.maxHp}</b></div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn ghost" id="turretSell">철거 · 🪙 +${Math.round(def.cost * turretSellRate)}</button>
-        ${maxed ? '<button class="btn" disabled>최대 레벨</button>'
-          : `<button class="btn primary" id="turretUpg" ${game.gold < cost ? 'disabled' : ''}>강화 · 🪙 ${cost}</button>`}
-      </div>`);
-    const up = document.getElementById('turretUpg');
-    if (up) up.addEventListener('click', () => {
-      if (game.upgradeBuilding(b)) { this.closeModal(); this.toast(`${def.name} 강화 완료`, 'gold'); }
-    });
-    const sell = document.getElementById('turretSell');
-    if (sell) sell.addEventListener('click', () => {
-      game.sellBuilding(b);
-      this.closeModal();
-    });
-    this.bindModalClose();
-  },
-
-  showResult(game, win) {
-    const acc = game.shots ? Math.min(100, Math.round(game.hits / game.shots * 100)) : 0;
-    const best = Save.data.best.wave;
-    this.resultState = { win: !!win };
-    this.openModal(`
-      <div class="result-hero">
-        <div class="big ${win ? 'w' : 'l'}">${win ? '마을을 지켜냈다' : '마을이 함락되었다'}</div>
-        <p class="tagline2">${win ? `15 웨이브의 대군을 모두 격퇴했습니다. 군주는 무너졌다.` : `${game.waveIndex + 1} 웨이브에서 방어선이 무너졌습니다. 연구소에서 다시 준비하세요.`}</p>
-      </div>
-      <div class="stats-grid">
-        <div class="stat-box"><span>도달 웨이브</span><b>${win ? MAX_WAVE : game.waveIndex + 1} / ${MAX_WAVE}</b></div>
-        <div class="stat-box"><span>처치</span><b>${game.kills}</b></div>
-        <div class="stat-box"><span>명중률</span><b>${acc}%</b></div>
-        <div class="stat-box"><span>획득 설계도</span><b>📘 +${game.runPoints}</b></div>
-        <div class="stat-box"><span>골드 획득</span><b>🪙 ${game.goldEarned}</b></div>
-        <div class="stat-box"><span>최고 기록</span><b>WAVE ${best}</b></div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn ghost" id="resMenu">메인으로</button>
-        <button class="btn" id="resLab">🔬 연구소</button>
-        <button class="btn primary" id="resRetry">다시 도전</button>
-      </div>`, 'result');
-    const retry = document.getElementById('resRetry');
-    if (retry) retry.addEventListener('click', () => {
-      const d = game.diff;
-      this.closeModal(true);
-      game.modalOpen = false;
-      game.paused = false;
-      game.startRun(d);
-    });
-    const lab = document.getElementById('resLab');
-    if (lab) lab.addEventListener('click', () => { this.labTab = 'weapons'; this.renderLab(); });
-    const menu = document.getElementById('resMenu');
-    if (menu) menu.addEventListener('click', () => {
-      this.closeModal(true);
-      game.modalOpen = false;
-      game.paused = false;
-      game.quitToMenu();
-    });
-  },
-};
+  return {
+    init, update, updateHud, updateLobby, hideLobby, showLobby, toLobby, buildBuildBar, updateBuildBar,
+    selectTower, selectPad, clearSelection, refreshTowerPanel, openTech, openPrestige, openCodex,
+    openStory, openOptions, openStageSelect, openCheat, hideModals, showStageClear, showDefeat,
+    toast, banner, askConfirm, startGame, cycleSpeed, togglePause, syncOptions, defaultTarget: 0,
+    get buildType() { return buildType; },
+    set buildType(v) { buildType = v; window.Render.setBuildType(v); updateBuildBar(); },
+  };
+})();

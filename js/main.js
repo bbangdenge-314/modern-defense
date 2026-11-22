@@ -1,155 +1,147 @@
-/* ─────────────────────────────────────────────
-   main.js — 부트스트랩·입력·게임 루프
-   ───────────────────────────────────────────── */
-'use strict';
-
+/* 현대병기 · 중세 방어전 — 부트스트랩 · 입력 · 루프 */
 (function () {
-  Save.load();
+  'use strict';
+  const G = window.Game;
+  const S = G.S;
   const canvas = document.getElementById('game');
-  const game = new Game(canvas);
-  window.__game = game;
-  window.__ui = UI;
-  window.__save = Save;
 
-  UI.init(game);
-  game.state = 'menu';
-  game.layout();
-  UI.showMenu(game);
+  G.init();
+  window.Render.init(canvas);
+  window.Render.focusVillage();
+  window.UI.init();
+  window.SFX.setEnabled(G.saveData.settings.sound !== false);
 
-  // 오디오는 첫 제스처에서 활성화
-  const unlockAudio = () => {
-    Sfx.init();
-    Sfx.setMuted(!Save.data.settings.sound);
-    window.removeEventListener('pointerdown', unlockAudio);
-    window.removeEventListener('keydown', unlockAudio);
-  };
-  window.addEventListener('pointerdown', unlockAudio);
-  window.addEventListener('keydown', unlockAudio);
+  /* ───────── 입력 ───────── */
+  const pointers = new Map();
+  let dragging = false, moved = 0, lastX = 0, lastY = 0, downX = 0, downY = 0, downT = 0;
+  let pinchStart = 0, pinchZoom = 0;
 
-  /* ── 좌표 변환 ──────────────────────────── */
-  function toWorld(e) {
+  function localPos(e) {
     const r = canvas.getBoundingClientRect();
-    return {
-      x: clamp(e.clientX - r.left, 0, game.W),
-      y: clamp(e.clientY - r.top - game.insetTop, 0, game.H),
-    };
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
-  /* ── 포인터 ─────────────────────────────── */
-  let downId = null;
-  let mouseAim = true;
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-  canvas.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse' && e.button !== 0) {
-      if (e.button === 2) { game.cancelModes(); }
+  canvas.addEventListener('pointerdown', e => {
+    if (window.Cutscene && window.Cutscene.isActive()) return;
+    canvas.setPointerCapture && canvas.setPointerCapture(e.pointerId);
+    const p = localPos(e);
+    pointers.set(e.pointerId, p);
+    if (pointers.size === 2) {
+      const arr = Array.from(pointers.values());
+      pinchStart = Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y);
+      pinchZoom = window.Render.cam.zoom;
+      dragging = false;
       return;
     }
-    if (game.state !== 'playing' || game.modalOpen) return;
-    e.preventDefault();
-    downId = e.pointerId;
-    mouseAim = e.pointerType === 'mouse';
-    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-    const p = toWorld(e);
-    game.pointerDown(p.x, p.y);
-    if (game.modalOpen) { game.firing = false; downId = null; }
+    dragging = true; moved = 0;
+    lastX = p.x; lastY = p.y; downX = p.x; downY = p.y; downT = performance.now();
   });
 
-  canvas.addEventListener('pointermove', (e) => {
-    if (game.state !== 'playing' && game.state !== 'menu') return;
-    if (e.pointerType !== 'mouse' && downId === null) return;
-    const p = toWorld(e);
-    game.pointerMove(p.x, p.y);
+  canvas.addEventListener('pointermove', e => {
+    const p = localPos(e);
+    if (pointers.has(e.pointerId)) pointers.set(e.pointerId, p);
+    if (pointers.size >= 2) {
+      const arr = Array.from(pointers.values());
+      const d = Math.hypot(arr[0].x - arr[1].x, arr[0].y - arr[1].y);
+      if (pinchStart > 0) {
+        const target = pinchZoom * (d / pinchStart);
+        window.Render.setZoom(target);
+      }
+      return;
+    }
+    if (dragging) {
+      const dx = p.x - lastX, dy = p.y - lastY;
+      moved += Math.abs(dx) + Math.abs(dy);
+      if (moved > 5) {
+        window.Render.pan(dx, dy);
+        lastX = p.x; lastY = p.y;
+      }
+    } else {
+      updateHover(p.x, p.y);
+    }
   });
 
-  const endPointer = (e) => {
-    if (downId !== null && e.pointerId !== downId) return;
-    downId = null;
-    game.pointerUp();
-  };
+  function endPointer(e) {
+    const p = localPos(e);
+    pointers.delete(e.pointerId);
+    if (pointers.size === 1) { pinchStart = 0; dragging = true; lastX = p.x; lastY = p.y; }
+    if (!dragging) return;
+    const dt = performance.now() - downT;
+    dragging = false;
+    if (moved < 8 && dt < 420) handleClick(p.x, p.y);
+  }
   canvas.addEventListener('pointerup', endPointer);
-  canvas.addEventListener('pointercancel', endPointer);
-  canvas.addEventListener('lostpointercapture', endPointer);
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-  canvas.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+  canvas.addEventListener('pointercancel', e => { pointers.delete(e.pointerId); dragging = false; });
 
-  window.addEventListener('touchmove', (e) => {
-    if (e.target === canvas) e.preventDefault();
+  canvas.addEventListener('wheel', e => {
+    if (window.Cutscene && window.Cutscene.isActive()) return;
+    if (!document.getElementById('lobby').classList.contains('hidden')) return;
+    e.preventDefault();
+    const p = localPos(e);
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    window.Render.zoomAt(p.x, p.y, factor);
   }, { passive: false });
 
-  /* ── 키보드 ─────────────────────────────── */
-  const norm = (k) => k.toLowerCase();
-  window.addEventListener('keydown', (e) => {
-    const k = norm(e.key);
-    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-    game.keys[k] = true;
-    if (!UI.inGame) return;
-    if (game.modalOpen) return;
+  function updateHover(x, y) {
+    const pad = window.Render.pickPad(x, y);
+    window.Render.setHoverPad(pad);
+    canvas.style.cursor = pad >= 0 || window.Render.pickTower(x, y) ? 'pointer' : (UI.buildType ? 'crosshair' : 'grab');
+  }
 
-    if (k === ' ') { e.preventDefault(); UI.togglePause(); }
-    else if (k === 's') {
-      game.speed = game.speed === 1 ? 2 : 1;
-      UI.els.btnSpeed.textContent = game.speed + '×';
-      UI.els.btnSpeed.classList.toggle('on', game.speed === 2);
-    } else if (k === 'r') { game.startReload(); }
-    else if (k === 'q') { game.requestSkill('grenade'); }
-    else if (k === 'e') { game.requestSkill('airstrike'); }
-    else if (k === 'f') {
-      game.autoAim = !game.autoAim;
-      Save.data.settings.autoAim = game.autoAim;
-      Save.save();
-      UI.applySettings();
-      UI.syncSkills(game);
-      UI.toast(game.autoAim ? '자동 조준 ON' : '자동 조준 OFF', 'gold');
-    } else if (k === 'b') { game.enterBuild('sentry'); }
-    else if (k === 'v') { game.enterBuild('flame'); }
-    else if (k === 'n') { game.enterBuild('mortar'); }
-    else if (k === 'm') { game.enterBuild('barricade'); }
-    else if (k === 'u') { UI.openUpgrade(); }
-    else if (k >= '1' && k <= '9') {
-      const w = WEAPONS[parseInt(k, 10) - 1];
-      if (w) game.switchWeapon(w.id);
+  function handleClick(x, y) {
+    if (S.phase === 'lobby') return;
+    const tower = window.Render.pickTower(x, y);
+    if (UI.buildType) {
+      const padIdx = window.Render.pickPad(x, y);
+      if (padIdx >= 0) {
+        const pad = S.pads[padIdx];
+        if (pad.tower) { UI.selectTower(pad.tower); return; }
+        if (window.Game.placeTower(padIdx, UI.buildType)) {
+          window.SFX.play('build');
+          UI.toast(window.DATA.TOWERS[UI.buildType].name + ' 배치 완료');
+          UI.updateBuildBar();
+          if (pad.tower) UI.selectTower(pad.tower);
+        } else {
+          UI.toast('골드가 부족합니다.');
+        }
+        return;
+      }
+      if (tower) { UI.selectTower(tower); return; }
+      UI.clearSelection();
+      return;
     }
-  });
-  window.addEventListener('keyup', (e) => {
-    game.keys[norm(e.key)] = false;
-  });
-  window.addEventListener('blur', () => { game.keys = {}; game.touchMove = 0; game.firing = false; });
+    if (tower) { UI.selectTower(tower); return; }
+    const padIdx = window.Render.pickPad(x, y);
+    if (padIdx >= 0) { UI.selectPad(padIdx); return; }
+    UI.clearSelection();
+  }
 
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && UI.inGame && game.state === 'playing' && !game.modalOpen) {
-      game.paused = true;
-    }
-  });
-
-  /* ── 리사이즈 ───────────────────────────── */
-  let resizeT = 0;
-  window.addEventListener('resize', () => {
-    clearTimeout(resizeT);
-    resizeT = setTimeout(() => {
-      game.layout();
-      Render.bgKey = '';
-    }, 80);
-  });
-  window.addEventListener('orientationchange', () => {
-    setTimeout(() => { game.layout(); Render.bgKey = ''; }, 220);
-  });
-
-  /* ── 루프 ──────────────────────────────── */
-  let last = performance.now();
-  function loop(ts) {
-    let dt = (ts - last) / 1000;
-    last = ts;
-    if (!isFinite(dt) || dt <= 0) dt = 0.016;
-    dt = Math.min(0.05, dt);
-    try {
-      game.frame(dt);
-    } catch (err) {
-      console.error(err);
-    }
+  /* ───────── 루프 ───────── */
+  let last = performance.now(), acc = 0;
+  function loop(now) {
+    const dt = Math.min(0.06, (now - last) / 1000);
+    last = now;
+    const csActive = window.Cutscene && window.Cutscene.isActive();
+    if (!S.paused && !csActive) G.update(dt);
+    window.Render.draw(dt);
+    if (S.phase !== 'lobby') window.UI.update(dt);
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
 
-  // 첫 화면 렌더
-  game.layout();
+  window.addEventListener('resize', () => {
+    window.Render.resize();
+    if (window.Cutscene) window.Cutscene._resize && window.Cutscene._resize();
+  });
+
+  // 첫 입력에서 오디오 활성화
+  const unlock = () => { window.SFX.resume(); window.removeEventListener('pointerdown', unlock); };
+  window.addEventListener('pointerdown', unlock);
+
+  // 화면이 가려지면 자동 일시정지
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && S.phase === 'wave') S.paused = true;
+  });
 })();

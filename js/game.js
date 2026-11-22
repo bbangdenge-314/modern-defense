@@ -1,1612 +1,1297 @@
-/* ─────────────────────────────────────────────
-   game.js — 전투 시뮬레이션 (물량 디펜스)
-   ───────────────────────────────────────────── */
-'use strict';
+/* 현대병기 · 중세 방어전 — 시뮬레이션 코어 (월드·적·포탑·자원·재회귀) */
+window.Game = (function () {
+  'use strict';
+  const D = window.DATA;
+  const V = D.VILLAGE;
+  const SAVE_KEY = 'md_isometric_save_v1';
 
-const TAU = Math.PI * 2;
-const DEG = Math.PI / 180;
+  const S = {
+    phase: 'lobby',            // lobby | prep | wave | stageclear | defeat | paused
+    stage: 1, wi: 1, globalWave: 0,
+    gold: 0, rp: 0, shards: 0,
+    keepHp: 1, keepMax: 1,
+    walls: {},
+    towers: [], enemies: [], projectiles: [], particles: [], decals: [], floaters: [],
+    pads: [], buildings: [], props: [],
+    waveComp: [], waveDirs: [], spawnQueue: [], spawnCursor: 0,
+    waveTimer: 0, waveDur: 0, waveEnded: true,
+    time: 0, speed: 1, paused: false,
+    kills: 0, waveKills: 0, totalGold: 0, totalDamage: 0, lastKillAt: 0, enraged: false,
+    prepTime: 22, prepLeft: 22,
+    stats: null,
+    bossRef: null,
+    notifications: [],
+    stats_extra: { relicChance: 1 },
+    lastWaveSummary: null,
+    damageTakenThisWave: 0,
+    cheat: { invincible: false, relicBoost: 1 },
+  };
 
-function segCircle(x1, y1, x2, y2, cx, cy, r) {
-  const dx = x2 - x1, dy = y2 - y1;
-  const l2 = dx * dx + dy * dy;
-  let t = l2 > 0 ? ((cx - x1) * dx + (cy - y1) * dy) / l2 : 0;
-  t = t < 0 ? 0 : (t > 1 ? 1 : t);
-  const px = x1 + dx * t, py = y1 + dy * t;
-  const ddx = px - cx, ddy = py - cy;
-  return ddx * ddx + ddy * ddy <= r * r;
-}
+  let save = null;
+  let pool = [];
+  const grid = { cell: 2, cols: 0, rows: 0, items: [] };
+  const handlers = {};
 
-class Game {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
-    this.dpr = 1;
-    this.state = 'menu';
-    this.time = 0;
-    this.menuT = 0;
-    this.speed = 1;
-    this.paused = false;
-    this.modalOpen = false;
-    this.diff = DIFF_BY_ID.normal;
+  /* ───────── 유틸 ───────── */
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+  function on(name, fn) { (handlers[name] = handlers[name] || []).push(fn); }
+  function emit(name, data) { (handlers[name] || []).forEach(fn => { try { fn(data); } catch (e) { console.error(e); } }); }
 
-    this.W = window.innerWidth;
-    this.H = window.innerHeight;
-    this.insetTop = 0;
-    this.insetBottom = 0;
-
-    this.enemies = [];
-    this.bullets = [];
-    this.shells = [];
-    this.arrows = [];
-    this.pendingBlasts = [];
-    this.particles = [];
-    this.texts = [];
-    this.decals = [];
-    this.corpses = [];
-    this.beams = [];
-    this.buildings = [];
-    this.barricades = [];
-    this.pads = [];
-
-    this.hero = {
-      x: this.W / 2, y: this.H - 30, aimX: this.W / 2, aimY: this.H * 0.3,
-      angle: -Math.PI / 2, weaponId: 'pistol', mags: {}, reloading: false, reloadT: 0,
-      reloadMax: 1, cd: 0, flash: 0, recoil: 0, hitMark: 0, killMark: 0, moveDir: 0,
+  /* ───────── 저장 ───────── */
+  function defaultSave() {
+    return {
+      v: 3, shards: 0, prestige: {}, research: {}, relics: {}, relicNew: {},
+      bestWave: 0, maxStage: 1, stagesCleared: 0, prestigeCount: 0, totalKills: 0,
+      seenCutscenes: {},
+      settings: {
+        sound: true, shake: true, particles: true, dmgNumbers: true,
+        unitScale: 0.82, zoomBase: 0.85, effects: 'normal', cutscene: true,
+      },
+      run: null,
     };
-
-    this.upg = {};
-    this.aimX = this.W / 2;
-    this.aimY = this.H * 0.35;
-    this.firing = false;
-    this.touchMove = 0;
-    this.keys = {};
-    this.buildMode = null;
-    this.skillAim = null;
-    this.selectedBuilding = null;
-
-    this.gold = 0;
-    this.scrap = 0;
-    this.villageHp = 3200;
-    this.villageMax = 3200;
-    this.waveIndex = 0;
-    this.wave = 1;
-    this.phase = 'prep';
-    this.prepTime = 0;
-    this.waveTime = 0;
-    this.spawnQueue = [];
-    this.waveTotal = 0;
-    this.spawned = 0;
-    this.waveNames = [];
-
-    this.kills = 0;
-    this.goldEarned = 0;
-    this.scrapEarned = 0;
-    this.shots = 0;
-    this.hits = 0;
-    this.dmgDealt = 0;
-    this.runPoints = 0;
-    this.structuresBuilt = 0;
-
-    this.skills = { grenade: { cd: 0, max: SKILLS.grenade.cd }, airstrike: { cd: 0, max: SKILLS.airstrike.cd } };
-    this.bossRef = null;
-    this.combo = 0;
-    this.comboT = 0;
-    this.shakeAmt = 0;
-    this.flashAlpha = 0;
-    this.hitstop = 0;
-    this.autoAim = !!(Save.data && Save.data.settings.autoAim);
-    this.decor = null;
-
-    this.layout();
-    this.makeDecor();
+  }
+  function loadSave() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      save = raw ? Object.assign(defaultSave(), JSON.parse(raw)) : defaultSave();
+      save.settings = Object.assign(defaultSave().settings, save.settings || {});
+      if (!save.relics) save.relics = {};
+      if (!save.prestige) save.prestige = {};
+      if (!save.research) save.research = {};
+      if (!save.seenCutscenes) save.seenCutscenes = {};
+      if (window.SFX) SFX.setEnabled(save.settings.sound);
+    } catch (e) { save = defaultSave(); }
+    S.shards = save.shards || 0;
+    return save;
+  }
+  function persist() {
+    if (!save) return;
+    save.shards = S.shards;
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(save)); } catch (e) {}
+  }
+  function saveRun() {
+    if (!save) return;
+    if (S.phase === 'lobby') { save.run = null; persist(); return; }
+    save.run = {
+      stage: S.stage, wi: S.wi, globalWave: S.globalWave,
+      gold: Math.round(S.gold), rp: Math.round(S.rp),
+      keepHp: S.keepHp, wallHp: { N: S.walls.N.hp, E: S.walls.E.hp, S: S.walls.S.hp, W: S.walls.W.hp },
+      towers: S.towers.map(t => ({ pad: t.pad, type: t.type, level: t.level, hp: t.hp })),
+      research: save.research, kills: S.kills, time: S.time,
+    };
+    save.bestWave = Math.max(save.bestWave || 0, S.globalWave);
+    save.maxStage = Math.max(save.maxStage || 1, S.stage);
+    save.totalKills = (save.totalKills || 0) + 0;
+    persist();
   }
 
-  /* ── layout ─────────────────────────────── */
-  readInsets() {
-    const hud = document.getElementById('hud');
-    if (!hud || hud.classList.contains('hidden')) { this.insetTop = 0; this.insetBottom = 0; return; }
-    const topbar = document.querySelector('.topbar');
-    const resCard = document.querySelector('.res-card');
-    const dock = document.getElementById('dock');
-    let top = 0, bottom = 0;
-    if (topbar) top = topbar.getBoundingClientRect().bottom;
-    if (resCard) top = Math.max(top, resCard.getBoundingClientRect().bottom);
-    if (dock) bottom = window.innerHeight - dock.getBoundingClientRect().top;
-    this.insetTop = Math.max(0, Math.round(top + 6));
-    this.insetBottom = Math.max(0, Math.round(bottom + 8));
+  /* ───────── 스탯 계산 ───────── */
+  function applyEff(st, eff, lv) {
+    if (!eff) return;
+    for (const k in eff) {
+      const v = eff[k] * lv;
+      if (k === 'unlock') continue;
+      if (k === 'startGold' || k === 'startRP' || k === 'armorPen' || k === 'burn' ||
+          k === 'pierce' || k === 'chain' || k === 'slots' || k === 'freeTower' ||
+          k === 'crit' || k === 'keepResearch' || k === 'doubleShot' || k === 'slowHit' ||
+          k === 'repair') st[k] += v;
+      else st[k] *= (1 + v);
+    }
+  }
+  function computeStats() {
+    const st = {
+      dmgMul: 1, rateMul: 1, rangeMul: 1, aoeMul: 1, goldMul: 1, rpMul: 1, shardMul: 1,
+      keepHpMul: 1, wallHpMul: 1, buildCostMul: 1, armorPen: 0, crit: 0, critMul: 1.8,
+      burn: 0, chain: 0, pierce: 0, slowHit: 0, slots: 0, startGold: 0, startRP: 0,
+      repair: 0.08, freeTower: 0, keepResearch: 0, doubleShot: 0,
+      unlocked: new Set(['gatling', 'mortar']),
+    };
+    for (const id in save.research) {
+      const node = D.TECHS.find(t => t.id === id);
+      if (!node) continue;
+      const lv = save.research[id];
+      if (node.eff && node.eff.unlock) st.unlocked.add(node.eff.unlock);
+      applyEff(st, node.eff, lv);
+    }
+    for (const id in save.prestige) {
+      const node = D.PRESTIGE.find(t => t.id === id);
+      if (!node) continue;
+      applyEff(st, node.eff, save.prestige[id]);
+    }
+    for (const id in save.relics) {
+      const r = D.RELIC_BY_ID[id];
+      if (r) applyEff(st, r.eff, 1);
+    }
+    st.buildCostMul = Math.max(0.35, st.buildCostMul);
+    S.stats = st;
+    return st;
   }
 
-  layout() {
-    const oldW = this.W, oldH = this.H;
-    this.dpr = Math.min(2, window.devicePixelRatio || 1);
-    this.canvas.width = Math.round(window.innerWidth * this.dpr);
-    this.canvas.height = Math.round(window.innerHeight * this.dpr);
-    this.canvas.style.width = window.innerWidth + 'px';
-    this.canvas.style.height = window.innerHeight + 'px';
-    this.readInsets();
-    this.W = Math.max(280, window.innerWidth);
-    this.H = Math.max(240, window.innerHeight - this.insetTop - this.insetBottom);
-
-    if (this.state !== 'menu' && oldW > 0 && oldH > 0 && (oldW !== this.W || oldH !== this.H)) {
-      const sx = this.W / oldW, sy = this.H / oldH;
-      const scale = (o) => { o.x *= sx; o.y *= sy; };
-      this.enemies.forEach(scale);
-      this.bullets.forEach(scale);
-      this.shells.forEach(b => { b.x *= sx; b.y *= sy; b.sx *= sx; b.sy *= sy; b.tx *= sx; b.ty *= sy; });
-      this.arrows.forEach(b => { b.x *= sx; b.y *= sy; b.tx *= sx; b.ty *= sy; b.sx *= sx; b.sy *= sy; });
-      this.particles.forEach(scale);
-      this.texts.forEach(scale);
-      this.decals.forEach(scale);
-      this.corpses.forEach(scale);
-      this.buildings.forEach(scale);
-      this.barricades.forEach(b => { b.x *= sx; b.y *= sy; });
-      this.hero.x *= sx;
-      this.aimX *= sx; this.aimY *= sy;
+  /* ───────── 마을·맵 초기화 ───────── */
+  function wallMax() {
+    return 12000 * S.stats.wallHpMul * (1 + 0.05 * (S.stage - 1)) * (1 + 0.03 * Math.max(0, S.globalWave - 1));
+  }
+  function keepMax() {
+    return 8000 * S.stats.keepHpMul * (1 + 0.04 * (S.stage - 1)) * (1 + 0.02 * Math.max(0, S.globalWave - 1));
+  }
+  function makeWalls(full) {
+    const mx = wallMax();
+    const prev = S.walls;
+    S.walls = {};
+    for (const id of ['N', 'E', 'S', 'W']) {
+      S.walls[id] = { id, hp: full ? mx : (prev[id] ? Math.min(prev[id].hp, mx) : mx), max: mx };
     }
-
-    this.wallY = Math.round(this.H * FIELD.WALL);
-    this.hero.y = this.wallY + FIELD.HERO_OFF;
-    if (this.state === 'menu') {
-      this.hero.x = this.W / 2;
-      this.hero.y = this.H - 26;
-      this.wallY = Math.round(this.H * 0.86);
-      this.hero.y = this.wallY + FIELD.HERO_OFF;
-    }
-    this.hero.x = clamp(this.hero.x, 42, this.W - 42);
-    this.aimX = clamp(this.aimX, 0, this.W);
-    this.aimY = clamp(this.aimY, 0, this.H);
-
-    this.padCols = this.W < 700 ? FIELD.PAD_COLS_NARROW : FIELD.PAD_COLS_WIDE;
-    const pads = [];
-    for (let r = 0; r < FIELD.PAD_ROWS.length; r++) {
-      for (let c = 0; c < this.padCols; c++) {
-        pads.push({
-          x: Math.round(this.W * ((c + 0.5) / this.padCols)),
-          y: Math.round(this.H * FIELD.PAD_ROWS[r]),
-          type: null,
-        });
-      }
-    }
-    // 기존 포탑을 새 패드 위치로 재매핑
-    this.pads = pads;
-    for (const b of this.buildings) {
-      if (b.type === 'barricade') continue;
-      let best = null, bd = 1e9;
-      for (const p of pads) {
-        const d = Math.abs(p.x - b.x) + Math.abs(p.y - b.y);
-        if (p.type === null && d < bd) { bd = d; best = p; }
-      }
-      if (best) { best.type = b.type; b.pad = best; b.x = best.x; b.y = best.y; }
-    }
-    this.makeDecor();
   }
 
-  makeDecor() {
+  function buildPads() {
+    const base = [
+      [23, 17.2], [29.2, 23], [23, 28.8], [16.8, 23],
+      [20.4, 20.4], [25.6, 20.4], [25.6, 25.6], [20.4, 25.6],
+      [23, 12.6], [33.4, 23], [23, 33.4], [12.6, 23],
+      [14.2, 14.2], [31.8, 14.2], [31.8, 31.8], [14.2, 31.8],
+    ];
+    S.pads = base.map((p, i) => ({
+      i, x: p[0], y: p[1], unlocked: i < 8 + S.stats.slots - (save.prestige && 0), tower: null,
+    }));
+    // 기술/재회귀 슬롯: 안쪽 8칸부터 순서대로 해금
+    const total = clamp(8 + Math.round(S.stats.slots), 8, S.pads.length);
+    S.pads.forEach((p, i) => { p.unlocked = i < total; });
+  }
+
+  function buildBuildings() {
+    const hpBase = 1000;
+    const list = [
+      { id: 'keep', name: '시청', icon: '🏯', x: 23, y: 23, w: 3.8, h: 3.8, hp: 1, keep: true },
+      { id: 'house1', name: '민가', icon: '🏠', x: 17.3, y: 17.3, w: 2.2, h: 2.2, hp: hpBase },
+      { id: 'house2', name: '민가', icon: '🏠', x: 28.7, y: 17.3, w: 2.2, h: 2.2, hp: hpBase },
+      { id: 'house3', name: '민가', icon: '🏠', x: 28.7, y: 28.7, w: 2.2, h: 2.2, hp: hpBase },
+      { id: 'chapel', name: '예배당', icon: '⛪', x: 17.3, y: 28.7, w: 2.2, h: 2.2, hp: hpBase * 0.9 },
+      { id: 'market', name: '시장', icon: '🏪', x: 23, y: 27.2, w: 1.7, h: 1.5, hp: hpBase * 0.7 },
+      { id: 'forge', name: '대장간', icon: '⚒️', x: 26.2, y: 23, w: 1.6, h: 1.6, hp: hpBase * 1.1 },
+      { id: 'well', name: '우물', icon: '⛲', x: 19.8, y: 23, w: 1.1, h: 1.1, hp: hpBase * 0.6 },
+      { id: 'warehouse', name: '창고', icon: '📦', x: 20.4, y: 18.1, w: 1.7, h: 1.4, hp: hpBase * 1.15 },
+    ];
+    S.buildings = list.map(b => Object.assign({}, b, { hpMax: b.hp, alive: true }));
+  }
+
+  function buildProps() {
+    // 나무·바위·수레 — 연출용(전투 판정 없음)
+    S.props = [];
     let seed = 1337;
-    const rnd = () => { seed = (seed * 1664525 + 1013904223) & 0x7fffffff; return seed / 0x7fffffff; };
-    const stars = [];
-    for (let i = 0; i < 90; i++) stars.push({ x: rnd() * this.W, y: rnd() * this.H * 0.42, r: rnd() * 1.4 + 0.3, a: rnd() * 0.6 + 0.2 });
-    const tufts = [];
-    const tuftN = Math.round(this.W * this.H / 12000);
-    for (let i = 0; i < tuftN; i++) {
-      tufts.push({
-        x: rnd() * this.W,
-        y: this.H * 0.20 + rnd() * (this.H * 0.66),
-        s: rnd() * 1.4 + 0.5,
-        a: rnd() * 0.25 + 0.06,
-        k: rnd() > 0.5,
+    const rnd2 = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    const inner = [
+      ['barrel', 21.2, 26.4], ['barrel', 21.7, 26.5], ['crate', 20.0, 26.9],
+      ['cart', 25.2, 26.5], ['barrel', 24.9, 26.3], ['crate', 25.9, 19.6],
+      ['barrel', 20.4, 19.5], ['cart', 20.1, 21.0], ['crate', 26.4, 20.2],
+      ['torch', 21.6, 25.8], ['torch', 24.4, 25.8], ['torch', 21.6, 20.3], ['torch', 24.4, 20.3],
+      ['hay', 16.8, 24.6], ['hay', 29.2, 21.4], ['barrel', 16.8, 24.0],
+    ];
+    for (const p of inner) S.props.push({ x: p[1], y: p[2], type: p[0], scale: 1 });
+    for (let i = 0; i < 180; i++) {
+      const x = rnd2() * 45, y = rnd2() * 45;
+      if (x > 12 && x < 34 && y > 12 && y < 34) continue;   // 마을 내부 제외
+      if (Math.abs(x - 23) < 2.4 || Math.abs(y - 23) < 2.4) continue; // 길 제외
+      const roll = rnd2();
+      S.props.push({
+        x, y, type: roll < 0.58 ? 'tree' : roll < 0.88 ? 'tree2' : 'rock',
+        scale: 0.8 + rnd2() * 0.55,
       });
     }
-    const rocks = [];
-    for (let i = 0; i < Math.round(this.W / 130) + 3; i++) {
-      rocks.push({ x: rnd() * this.W, y: this.H * 0.24 + rnd() * this.H * 0.58, r: rnd() * 7 + 3 });
+  }
+
+  /* ───────── 새 게임 ───────── */
+  function startRun(opts) {
+    opts = opts || {};
+    computeStats();
+    S.phase = 'prep';
+    S.stage = opts.stage || 1;
+    S.wi = 1;
+    S.globalWave = 0;
+    S.paused = false;
+    S.speed = 1;
+    S.gold = Math.round(650 + S.stats.startGold);
+    S.rp = Math.round(20 + S.stats.startRP);
+    S.walls = {};
+    makeWalls(true);
+    S.keepMax = keepMax();
+    S.keepHp = S.keepMax;
+    S.towers = [];
+    S.enemies = [];
+    S.projectiles = [];
+    S.particles = [];
+    S.decals = [];
+    S.floaters = [];
+    S.kills = 0; S.waveKills = 0; S.totalGold = 0;
+    S.bossRef = null;
+    S.lastWaveSummary = null;
+    S.time = 0;
+    buildPads();
+    buildBuildings();
+    buildProps();
+    // 재회귀 '배치된 포탑' 영구 강화
+    let free = Math.round(S.stats.freeTower);
+    for (const p of S.pads) {
+      if (free <= 0) break;
+      if (p.unlocked) { placeTower(p.i, 'gatling', true); free--; }
     }
-    const torches = [];
-    const n = Math.max(3, Math.round(this.W / 190));
-    for (let i = 0; i < n; i++) torches.push({ x: (i + 0.5) / n * this.W + (rnd() - 0.5) * 30, y: this.wallY - 10, ph: rnd() * 10 });
-    this.decor = { stars, tufts, rocks, torches, seed: rnd() };
+    S.prepTime = 26; S.prepLeft = 26;
+    S.waveComp = D.waveComp(S.stage, S.wi);
+    S.waveDirs = D.waveDirs(S.stage, S.wi);
+    S.waveEnded = true;
+    save.research = save.research || {};
+    S.phase = 'prep';
+    startPrep(true);
+    saveRun();
+    emit('start');
   }
 
-  /* ── run lifecycle ──────────────────────── */
-  startRun(diff, opts) {
-    this.diff = diff || DIFF_BY_ID.normal;
-    const savedAuto = Save.data.settings.autoAim;
-    this.autoAim = !!savedAuto;
-    this.state = 'playing';
-    this.paused = false;
-    this.modalOpen = false;
-    this.time = 0;
-    this.speed = 1;
-    this.enemies.length = 0;
-    this.bullets.length = 0;
-    this.shells.length = 0;
-    this.arrows.length = 0;
-    this.pendingBlasts.length = 0;
-    this.particles.length = 0;
-    this.texts.length = 0;
-    this.decals.length = 0;
-    this.corpses.length = 0;
-    this.beams.length = 0;
-    this.buildings.length = 0;
-    this.barricades.length = 0;
-    this.pads.forEach(p => p.type = null);
-    this.bossRef = null;
-    this.combo = 0;
-    this.comboT = 0;
-    this.shakeAmt = 0;
-    this.flashAlpha = 0;
-    this.hitstop = 0;
-    this.buildMode = null;
-    this.skillAim = null;
-    this.selectedBuilding = null;
-
-    this.gold = 260 + Save.perkLevel('startGold') * 80;
-    this.scrap = 40;
-    this.villageMax = 3200 + Save.perkLevel('wallHp') * 450;
-    this.villageHp = this.villageMax;
-    this.kills = 0;
-    this.goldEarned = 0;
-    this.scrapEarned = 0;
-    this.shots = 0;
-    this.hits = 0;
-    this.dmgDealt = 0;
-    this.runPoints = 0;
-    this.structuresBuilt = 0;
-    this.waveIndex = 0;
-    this.wave = 1;
-    this.phase = 'prep';
-    this.prepTime = 26;
-    this.spawnQueue = [];
-    this.waveTotal = 0;
-    this.spawned = 0;
-
-    this.upg = {};
-    for (const w of WEAPONS) this.upg[w.id] = { dmg: 0, rate: 0, pierce: 0, reload: 0 };
-
-    this.hero.weaponId = 'pistol';
-    this.hero.mags = {};
-    for (const w of WEAPONS) this.hero.mags[w.id] = w.mag;
-    this.hero.reloading = false;
-    this.hero.reloadT = 0;
-    this.hero.cd = 0;
-    this.hero.flash = 0;
-    this.skills.grenade.cd = 0;
-    this.skills.airstrike.cd = 0;
-
-    if (typeof UI !== 'undefined') UI.enterGame(this);
-    this.layout();
-    this.makeDecor();
-    Save.data.stats.runs++;
-    Save.save();
-
-    if (typeof UI !== 'undefined') {
-      if (typeof UI.pendingResult !== 'undefined') UI.pendingResult = null;
-      UI.banner('방어선 구축', `웨이브 1 · ${WAVES[0].name}`);
-      UI.toast('포탑과 바리케이드로 방어선을 세우세요', 'gold');
-      UI.updateWavePreview(true);
+  function continueRun() {
+    if (!save.run) return false;
+    computeStats();
+    const r = save.run;
+    S.stage = r.stage || 1; S.wi = r.wi || 1; S.globalWave = r.globalWave || 0;
+    S.gold = r.gold || 0; S.rp = r.rp || 0;
+    S.kills = r.kills || 0;
+    makeWalls(true);
+    S.keepMax = keepMax();
+    S.keepHp = clamp(r.keepHp || S.keepMax, 1, S.keepMax);
+    for (const id in (r.wallHp || {})) if (S.walls[id]) S.walls[id].hp = clamp(r.wallHp[id], 0, S.walls[id].max);
+    buildPads(); buildBuildings(); buildProps();
+    S.towers = [];
+    S.enemies = []; S.projectiles = []; S.particles = []; S.decals = [];
+    for (const t of (r.towers || [])) {
+      const pad = S.pads[t.pad];
+      if (!pad) continue;
+      placeTower(t.pad, t.type, true);
+      const tw = pad.tower;
+      if (tw) { tw.level = t.level || 1; tw.hp = t.hp || tw.hpMax; }
     }
-  }
-
-  quitToMenu() {
-    this.state = 'menu';
-    this.paused = false;
-    this.modalOpen = false;
-    this.enemies.length = 0;
-    this.buildings.length = 0;
-    this.barricades.length = 0;
-    this.pads.forEach(p => p.type = null);
-    this.particles.length = 0;
-    this.shells.length = 0;
-    this.bullets.length = 0;
-    this.arrows.length = 0;
-    this.beams.length = 0;
-    this.corpses.length = 0;
-    this.decals.length = 0;
-    this.hero.x = this.W / 2;
-    this.hero.reloading = false;
-    this.hero.cd = 0;
-    this.hero.mags = {};
-    this.buildMode = null;
-    this.skillAim = null;
-    if (typeof UI !== 'undefined') UI.showMenu(this);
-    this.layout();
-    this.makeDecor();
-    if (typeof UI !== 'undefined') UI.syncMenu();
-  }
-
-  /* ── weapon stats ───────────────────────── */
-  stats(w) {
-    const p = (this.upg && this.upg[w.id]) || { dmg: 0, rate: 0, pierce: 0, reload: 0 };
-    return {
-      dmg: w.dmg * (1 + 0.13 * p.dmg),
-      rpm: w.rpm * (1 + 0.07 * p.rate),
-      mag: w.mag,
-      reload: w.reload * (1 - 0.06 * p.reload),
-      pierce: (w.pierce || 0) + Math.floor(p.pierce / 2),
-      spread: w.spread,
-      pellets: w.pellets || 1,
-    };
-  }
-
-  upgradeWeapon(id, st) {
-    const def = WUPG[st];
-    const p = this.upg[this.hero.weaponId];
-    if (!p) return false;
-    if (p[st] >= def.max) { UI.toast('이미 최대 레벨입니다', 'warn'); return false; }
-    const cost = def.cost(p[st]);
-    if (this.scrap < cost) { UI.toast(`고철이 부족합니다 (필요 ${cost})`, 'warn'); Sfx.deny(); return false; }
-    this.scrap -= cost;
-    p[st]++;
-    Sfx.build();
-    UI.toast(`${WEAPON_BY_ID[this.hero.weaponId].short} ${def.name} Lv.${p[st]}`, 'gold');
+    S.phase = 'prep';
+    startPrep(true);
+    emit('start');
     return true;
   }
 
-  switchWeapon(id) {
-    if (!Save.hasWeapon(id)) { UI.toast('연구소에서 해금해야 합니다', 'warn'); Sfx.deny(); return; }
-    if (this.hero.weaponId === id) return;
-    this.hero.weaponId = id;
-    this.hero.reloading = false;
-    this.hero.reloadT = 0;
-    this.hero.cd = 0.12;
-    if (this.hero.mags[id] === undefined) this.hero.mags[id] = WEAPON_BY_ID[id].mag;
-    Sfx.ui();
+  /* ───────── 준비/웨이브 ───────── */
+  function startPrep(silent) {
+    S.phase = 'prep';
+    S.prepTime = S.stage === 1 && S.globalWave === 0 ? 30 : 16;
+    S.prepLeft = S.prepTime;
+    S.waveComp = D.waveComp(S.stage, S.wi);
+    S.waveDirs = D.waveDirs(S.stage, S.wi);
+    S.waveEnded = true;
+    if (!silent) emit('prep');
   }
 
-  startReload() {
-    const h = this.hero;
-    if (h.reloading) return;
-    const w = WEAPON_BY_ID[h.weaponId];
-    if ((h.mags[h.weaponId] | 0) >= w.mag) return;
-    h.reloading = true;
-    h.reloadT = this.stats(w).reload;
-    h.reloadMax = h.reloadT;
-    Sfx.reload();
-  }
-
-  /* ── input actions ──────────────────────── */
-  setAim(x, y) {
-    this.aimX = clamp(x, 0, this.W);
-    this.aimY = clamp(y, 0, this.H);
-    if (!this.autoAim) {
-      this.hero.aimX = this.aimX;
-      this.hero.aimY = this.aimY;
-    }
-  }
-
-  pointerDown(x, y) {
-    if (this.state !== 'playing' || this.modalOpen || this.paused) return;
-    this.setAim(x, y);
-    if (this.skillAim) { this.castSkill(this.skillAim, this.aimX, this.aimY); return; }
-    if (this.buildMode) { this.tryBuild(this.aimX, this.aimY); return; }
-    const b = this.pickBuilding(x, y);
-    if (b) { UI.openTurretPanel(this, b); return; }
-    const bar = this.pickBarricade(x, y);
-    if (bar && !this.firing) { /* 사격 우선, 수리는 repair 모드 */ }
-    this.firing = true;
-    this.hero.firingNow = true;
-    this.fireIfReady();
-  }
-
-  pointerUp() {
-    this.firing = false;
-    this.hero.firingNow = false;
-  }
-
-  pointerMove(x, y) {
-    this.setAim(x, y);
-  }
-
-  cancelModes() {
-    this.buildMode = null;
-    this.skillAim = null;
-    this.firing = false;
-    if (typeof UI !== 'undefined') UI.syncModes(this);
-  }
-
-  enterBuild(mode) {
-    if (this.state !== 'playing') return;
-    const t = TURRETS[mode];
-    if (mode !== 'barricade' && mode !== 'repair') {
-      if (!t) return;
-      if (!Save.hasTurret(mode)) { UI.toast('연구소에서 해금해야 합니다', 'warn'); Sfx.deny(); return; }
-      if (this.gold < t.cost) { UI.toast(`골드 부족 (필요 ${t.cost})`, 'warn'); Sfx.deny(); return; }
-      const freePads = this.pads.filter(p => !p.type).length;
-      if (!freePads) { UI.toast('빈 포탑 지점이 없습니다', 'warn'); Sfx.deny(); return; }
-    } else if (mode === 'barricade') {
-      if (this.gold < 55) { UI.toast('골드 부족 (필요 55)', 'warn'); Sfx.deny(); return; }
-    } else if (mode === 'repair') {
-      if (this.gold < 30) { UI.toast('골드 부족 (필요 30)', 'warn'); Sfx.deny(); return; }
-    }
-    this.skillAim = null;
-    this.buildMode = this.buildMode === mode ? null : mode;
-    Sfx.ui();
-    UI.syncModes(this);
-  }
-
-  requestSkill(id) {
-    if (this.state !== 'playing') return;
-    const s = this.skills[id];
-    if (!s || s.cd > 0) { Sfx.deny(); return; }
-    if (this.skillAim === id) { this.skillAim = null; }
-    else { this.skillAim = id; this.buildMode = null; }
-    Sfx.ui();
-    UI.syncModes(this);
-  }
-
-  castSkill(id, x, y) {
-    const s = this.skills[id];
-    if (!s || s.cd > 0) return;
-    this.skillAim = null;
-    if (id === 'grenade') {
-      this.lobShell(this.hero.x, this.hero.y - 16, x, y, 0.5, 'grenade', SKILLS.grenade.dmg, SKILLS.grenade.radius, this.hero.angle);
-    } else if (id === 'airstrike') {
-      for (let i = 0; i < 4; i++) {
-        this.pendingBlasts.push({
-          t: 0.55 + i * 0.22 + Math.random() * 0.1,
-          x: x + rand(-55, 55), y: y + rand(-45, 45),
-          radius: SKILLS.airstrike.radius * rand(0.8, 1.1), dmg: SKILLS.airstrike.dmg, kind: 'air',
-        });
+  function startWave() {
+    if (S.phase !== 'prep') return;
+    S.phase = 'wave';
+    S.globalWave = (S.stage - 1) * D.WAVES_PER_STAGE + S.wi;
+    if (window.SFX) SFX.play('wave');
+    S.waveKills = 0;
+    S.waveComp = D.waveComp(S.stage, S.wi);
+    S.waveDirs = D.waveDirs(S.stage, S.wi);
+    const comp = S.waveComp;
+    const total = comp.reduce((a, c) => a + c.count, 0);
+    const dirs = S.waveDirs;
+    const scale = D.stageScale(S.stage, S.wi);
+    const dur = clamp(14 + total * 0.055, 18, 78);
+    S.waveDur = dur;
+    S.waveTimer = 0;
+    S.spawnQueue = [];
+    let idx = 0;
+    for (const c of comp) {
+      const per = c.count;
+      for (let i = 0; i < per; i++) {
+        const side = dirs[(idx + i) % dirs.length];
+        const t = (i / Math.max(1, per)) * dur * 0.88 + rnd(0, 1.6);
+        S.spawnQueue.push({ type: c.type, side, t, lane: Math.random() });
+        idx++;
       }
-      Sfx.shot('missile');
     }
-    s.cd = s.max * (1 - 0.10 * Save.perkLevel('skillCd'));
-    s.cd = Math.max(1, s.cd);
-    this.shake(3);
-    UI.syncModes(this);
+    S.spawnQueue.sort((a, b) => a.t - b.t);
+    S.spawnCursor = 0;
+    S.waveEnded = false;
+    S.damageTakenThisWave = 0;
+    S.lastKillAt = S.time; S.enraged = false;
+    if (S.stats) baseBoss = null;
+    emit('waveStart', { stage: S.stage, wi: S.wi, comp, dirs, total, scale });
+    saveRun();
   }
 
-  /* ── build ──────────────────────────────── */
-  tryBuild(x, y) {
-    if (this.buildMode === 'sentry' || this.buildMode === 'flame' || this.buildMode === 'mortar' || this.buildMode === 'rail') {
-      const def = TURRETS[this.buildMode];
-      if (this.gold < def.cost) { UI.toast('골드가 부족합니다', 'warn'); Sfx.deny(); return; }
-      let pad = null, bd = 1e9;
-      for (const p of this.pads) {
-        if (p.type) continue;
-        const d = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
-        if (d < bd) { bd = d; pad = p; }
-      }
-      if (!pad || bd > 78 * 78) { UI.toast('포탑은 설치 지점에만 배치할 수 있습니다', 'warn'); Sfx.deny(); return; }
-      this.gold -= def.cost;
-      pad.type = this.buildMode;
-      const b = this.makeBuilding(this.buildMode, pad.x, pad.y, pad);
-      this.buildings.push(b);
-      this.structuresBuilt++;
-      this.boom(pad.x, pad.y + 6, 0.4);
-      Sfx.build();
-      this.buildMode = null;
-      UI.syncModes(this);
-      UI.toast(`${def.name} 배치 완료`, 'gold');
-      return;
+  function spawnFromQueue(dt) {
+    S.waveTimer += dt;
+    while (S.spawnCursor < S.spawnQueue.length && S.spawnQueue[S.spawnCursor].t <= S.waveTimer) {
+      const q = S.spawnQueue[S.spawnCursor++];
+      if (S.enemies.length > 2600) continue;
+      spawnEnemy(q.type, q.side, q.lane);
     }
-    if (this.buildMode === 'barricade') {
-      if (this.gold < 55) { UI.toast('골드가 부족합니다', 'warn'); Sfx.deny(); return; }
-      const minY = this.H * FIELD.BUILD_MIN, maxY = this.H * FIELD.BUILD_MAX;
-      if (y < minY || y > maxY) { UI.toast('바리케이드는 전장 중앙에만 설치할 수 있습니다', 'warn'); Sfx.deny(); return; }
-      const w = this.W < 620 ? 104 : 132;
-      for (const b of this.barricades) {
-        if (Math.abs(b.x - x) < (b.w + w) * 0.42 && Math.abs(b.y - y) < 34) {
-          UI.toast('너무 가깝습니다', 'warn'); Sfx.deny(); return;
+  }
+
+  function waveCompleteCheck() {
+    if (S.phase !== 'wave' || S.waveEnded) return;
+    if (S.spawnCursor >= S.spawnQueue.length && S.enemies.length === 0) {
+      S.waveEnded = true;
+      endWave();
+    }
+  }
+
+  let baseBoss = null;
+  function endWave() {
+    const g = S.globalWave;
+    const goldReward = Math.round((120 + 26 * g) * S.stats.goldMul);
+    const rpReward = Math.round((7 + 3.2 * g) * S.stats.rpMul);
+    S.gold += goldReward; S.totalGold += goldReward;
+    S.rp += rpReward;
+    // 수리
+    const rep = (0.12 + S.stats.repair);
+    for (const id in S.walls) {
+      const w = S.walls[id];
+      w.hp = Math.min(w.max, w.hp + w.max * rep);
+    }
+    S.keepHp = Math.min(S.keepMax, S.keepHp + S.keepMax * rep * 0.6);
+    for (const b of S.buildings) if (b.alive && b.hp < b.hpMax) b.hp = Math.min(b.hpMax, b.hp + b.hpMax * 0.25);
+    if (window.SFX) SFX.play('victory');
+    save.totalKills = (save.totalKills || 0) + S.waveKills;
+    S.lastWaveSummary = { wave: g, gold: goldReward, rp: rpReward, kills: S.waveKills, damage: Math.round(S.damageTakenThisWave) };
+    save.bestWave = Math.max(save.bestWave || 0, g);
+    save.maxStage = Math.max(save.maxStage || 1, S.stage);
+    persist();
+    if (S.wi >= D.WAVES_PER_STAGE) {
+      stageClear();
+    } else {
+      S.wi += 1;
+      S.phase = 'prep';
+      startPrep(true);
+      emit('waveClear', S.lastWaveSummary);
+      saveRun();
+    }
+  }
+
+  function stageClear() {
+    S.phase = 'stageclear';
+    save.stagesCleared = Math.max(save.stagesCleared || 0, S.stage);
+    save.maxStage = Math.max(save.maxStage || 1, S.stage + 1);
+    persist();
+    const bonusGold = Math.round((180 + 40 * S.stage) * S.stats.goldMul);
+    const bonusRp = Math.round((30 + 12 * S.stage) * S.stats.rpMul);
+    S.gold += bonusGold;
+    S.rp += bonusRp;
+    S.lastStageSummary = { stage: S.stage, gold: bonusGold, rp: bonusRp };
+    emit('stageClear', { stage: S.stage, gold: bonusGold, rp: bonusRp, shards: prestigeGain() });
+    saveRun();
+  }
+
+  function nextStage() {
+    S.stage += 1;
+    S.wi = 1;
+    makeWalls(false);
+    for (const id in S.walls) S.walls[id].hp = S.walls[id].max;
+    S.keepMax = keepMax();
+    S.keepHp = S.keepMax;
+    for (const b of S.buildings) { b.alive = true; b.hp = b.hpMax; }
+    buildPadsKeepTowers();
+    S.phase = 'prep';
+    startPrep(false);
+    saveRun();
+    emit('nextStage', S.stage);
+  }
+
+  function buildPadsKeepTowers() {
+    const old = S.towers.slice();
+    buildPads();
+    S.towers = [];
+    for (const t of old) {
+      const pad = S.pads[t.pad];
+      if (!pad || !pad.unlocked) {
+        // 슬롯이 줄면 보상 없이 제거하지 않고 가장 가까운 빈 슬롯으로 이동
+        const target = S.pads.find(p => p.unlocked && !p.tower);
+        if (target) { S.towers.push(t); target.tower = t; t.pad = target.i; t.x = target.x; t.y = target.y; continue; }
+        continue;
+      }
+      S.towers.push(t); pad.tower = t; t.x = pad.x; t.y = pad.y;
+    }
+  }
+
+  /* ───────── 재회귀 ───────── */
+  function prestigeGain() {
+    const g = Math.max(S.globalWave, save.bestWave || 0);
+    const raw = Math.pow(g, 1.32) * 0.85 + S.kills / 1600 + (save.stagesCleared || 0) * 4;
+    return Math.max(0, Math.floor(raw * S.stats.shardMul));
+  }
+  function canPrestige() {
+    return S.globalWave >= D.WAVES_PER_STAGE || S.phase === 'defeat' || (save.bestWave || 0) >= D.WAVES_PER_STAGE;
+  }
+  function doPrestige() {
+    const gain = prestigeGain();
+    S.shards += gain;
+    save.shards = S.shards;
+    save.prestigeCount = (save.prestigeCount || 0) + 1;
+    save.bestWave = Math.max(save.bestWave || 0, S.globalWave);
+    // 연구 초기화(회귀 기억 유지분)
+    const keep = S.stats.keepResearch;
+    const nextResearch = {};
+    if (keep > 0) {
+      for (const id in save.research) {
+        const lv = Math.floor(save.research[id] * keep);
+        if (lv > 0) nextResearch[id] = lv;
+      }
+    }
+    save.research = nextResearch;
+    save.run = null;
+    S.phase = 'lobby';
+    S.enemies = []; S.towers = []; S.projectiles = []; S.particles = []; S.decals = [];
+    persist();
+    computeStats();
+    emit('prestige', { gain });
+    return gain;
+  }
+
+  /* ───────── 포탑 ───────── */
+  function towerCost(typeId, level) {
+    const t = D.TOWERS[typeId];
+    if (!t) return 0;
+    if (!level) return Math.round(t.cost * S.stats.buildCostMul);
+    return Math.round(t.cost * 0.62 * Math.pow(1.52, level - 1) * S.stats.buildCostMul);
+  }
+  function placeTower(padIndex, typeId, free) {
+    const pad = S.pads[padIndex];
+    const def = D.TOWERS[typeId];
+    if (!pad || !def || pad.tower) return false;
+    if (!S.stats.unlocked.has(typeId)) return false;
+    const cost = towerCost(typeId, 0);
+    if (!free && S.gold < cost) return false;
+    if (!free) S.gold -= cost;
+    const scale = 1;
+    const tower = {
+      id: 'tw' + (S.towers.length + 1) + '_' + Math.floor(Math.random() * 9999),
+      type: typeId, pad: padIndex, x: pad.x, y: pad.y, level: 1,
+      hpMax: def.hp * (1 + 0.08 * (S.stage - 1)), hp: def.hp * (1 + 0.08 * (S.stage - 1)),
+      cd: 0.2, target: null, angle: -Math.PI / 2, recoil: 0, beamTime: 0, charge: 0,
+      kills: 0, damage: 0, ramp: 0,
+    };
+    pad.tower = tower;
+    S.towers.push(tower);
+    emit('towerChange');
+    return true;
+  }
+  function upgradeTower(tower) {
+    if (!tower || tower.level >= D.TOWER_MAX_LEVEL) return false;
+    const cost = towerCost(tower.type, tower.level);
+    if (S.gold < cost) return false;
+    S.gold -= cost;
+    tower.level++;
+    tower.hpMax *= 1.12;
+    tower.hp = Math.min(tower.hpMax, tower.hp + tower.hpMax * 0.25);
+    emit('towerChange');
+    return true;
+  }
+  function sellTower(tower) {
+    if (!tower) return false;
+    const idx = S.towers.indexOf(tower);
+    if (idx < 0) return false;
+    let spent = towerCost(tower.type, 0);
+    for (let l = 1; l < tower.level; l++) spent += towerCost(tower.type, l);
+    S.gold += Math.round(spent * 0.6);
+    S.towers.splice(idx, 1);
+    const pad = S.pads[tower.pad];
+    if (pad) pad.tower = null;
+    emit('towerChange');
+    return true;
+  }
+
+  function towerStats(t) {
+    const def = D.TOWERS[t.type];
+    const lvl = 1 + (t.level - 1) * D.UPGRADE_STEP;
+    const st = S.stats;
+    return {
+      def, level: t.level,
+      dmg: def.dmg * lvl * st.dmgMul,
+      rate: def.rate * (1 + (t.level - 1) * 0.03) * st.rateMul,
+      range: def.range * st.rangeMul * (1 + (t.level - 1) * 0.015),
+      aoe: (def.aoe || 0) * st.aoeMul * (1 + (t.level - 1) * 0.02),
+      armorPen: (def.armorPen || 0) + st.armorPen + (t.level - 1) * 1.2,
+      burn: (def.burn || 0) + st.burn,
+      pierce: (def.pierce || 0) + st.pierce,
+      chains: (def.chains || 0) + Math.floor(st.chain),
+      salvo: def.salvo || 1,
+      crit: st.crit, critMul: st.critMul,
+      slow: (def.slow || 0) + (st.slowHit || 0),
+    };
+  }
+  function towerDps(t) {
+    const s = towerStats(t);
+    const def = s.def;
+    let dps = s.dmg * s.rate;
+    if (def.proj === 'shell' || def.proj === 'grenade') dps *= 2.2;
+    if (def.salvo) dps *= def.salvo;
+    if (def.proj === 'chain') dps *= 2.6;
+    if (def.proj === 'beam') dps *= 1.5;
+    if (def.proj === 'flame') dps *= 2.4;
+    return Math.round(dps);
+  }
+
+  /* ───────── 적 ───────── */
+  function spawnEnemy(type, side, lane) {
+    const def = D.ENEMIES[type];
+    if (!def) return;
+    const scale = D.stageScale(S.stage, S.wi);
+    const hp = def.hp * scale.hp;
+    const e = pool.pop() || {};
+    e.id = e.id || (spawnEnemy._n = (spawnEnemy._n || 0) + 1);
+    e.type = type; e.def = def;
+    e.hp = hp; e.hpMax = hp;
+    e.armor = def.armor + scale.armor;
+    e.speed = def.speed * scale.speed;
+    e.dmg = def.dmg * scale.dmg;
+    e.interval = def.interval || 1;
+    e.bounty = def.bounty * scale.bounty;
+    e.side = side;
+    e.size = def.size || 0.7;
+    e.state = 'march';
+    e.atkCd = rnd(0, 0.5);
+    e.slowT = 0; e.slowAmt = 0; e.stun = 0; e.burnT = 0; e.burnDps = 0;
+    e.hurt = 0; e.dead = false; e.anim = Math.random() * 6.28; e.walk = 0;
+    e.flip = 1;
+    const off = 3.0 + lane * 10.0;       // 성문 앞쪽으로 모이는 위치
+    let x, y, tx, ty;
+    if (side === 'N') { x = V.x0 + off; y = 4.4; tx = V.x0 + off; ty = V.y0 - 0.55; }
+    else if (side === 'S') { x = V.x0 + off; y = 41.6; tx = V.x0 + off; ty = V.y1 + 0.55; }
+    else if (side === 'W') { x = 4.4; y = V.y0 + off; tx = V.x0 - 0.55; ty = V.y0 + off; }
+    else { x = 41.6; y = V.y0 + off; tx = V.x1 + 0.55; ty = V.y0 + off; }
+    e.x = x + rnd(-0.5, 0.5); e.y = y + rnd(-0.5, 0.5);
+    e.tx = tx; e.ty = ty;
+    e.homeX = e.x; e.homeY = e.y;
+    e.spawnR = 20;
+    if (def.ranged) { e.ranged = def.ranged; e.rangeStop = def.ranged; }
+    S.enemies.push(e);
+    return e;
+  }
+
+  function enemiesInRadius(x, y, r, out) {
+    out = out || [];
+    out.length = 0;
+    const cell = grid.cell;
+    const c0 = Math.max(0, Math.floor((x - r) / cell)), c1 = Math.min(grid.cols - 1, Math.floor((x + r) / cell));
+    const r0 = Math.max(0, Math.floor((y - r) / cell)), r1 = Math.min(grid.rows - 1, Math.floor((y + r) / cell));
+    const r2 = r * r;
+    for (let cy = r0; cy <= r1; cy++) {
+      for (let cx = c0; cx <= c1; cx++) {
+        const arr = grid.items[cy * grid.cols + cx];
+        for (let i = 0; i < arr.length; i++) {
+          const e = arr[i];
+          if (e.dead) continue;
+          const dx = e.x - x, dy = e.y - y;
+          if (dx * dx + dy * dy <= r2) out.push(e);
         }
       }
-      if (this.barricades.length >= 12) { UI.toast('바리케이드는 최대 12개까지', 'warn'); Sfx.deny(); return; }
-      this.gold -= 55;
-      this.barricades.push({
-        x: clamp(x, w / 2 + 6, this.W - w / 2 - 6), y: clamp(y, minY, maxY),
-        w, h: 20, hp: 520, maxHp: 520, flash: 0,
-      });
-      this.structuresBuilt++;
-      Sfx.build();
-      this.boom(x, y, 0.3);
-      UI.toast('바리케이드 설치', 'gold');
-      this.buildMode = null;
-      UI.syncModes(this);
-      return;
     }
-    if (this.buildMode === 'repair') {
-      if (this.gold < 30) { UI.toast('골드가 부족합니다', 'warn'); Sfx.deny(); return; }
-      const near = this.nearestDamageable(x, y);
-      if (!near) { UI.toast('수리할 구조물이 없습니다', 'warn'); Sfx.deny(); return; }
-      this.gold -= 30;
-      if (near.isWall) {
-        this.healWall(this.villageMax * 0.14);
-      } else {
-        near.obj.hp = Math.min(near.obj.maxHp, near.obj.hp + near.obj.maxHp * 0.4);
-        this.hitspark(near.obj.x, near.obj.y, '#9be8a4', 8);
-      }
-      Sfx.build();
-      UI.toast('수리 완료', 'gold');
-      this.buildMode = null;
-      UI.syncModes(this);
-      return;
+    return out;
+  }
+
+  function rebuildGrid() {
+    const cell = grid.cell;
+    grid.cols = Math.ceil(D.MAP / cell);
+    grid.rows = grid.cols;
+    if (grid.items.length !== grid.cols * grid.rows) {
+      grid.items = new Array(grid.cols * grid.rows);
+      for (let i = 0; i < grid.items.length; i++) grid.items[i] = [];
+    } else {
+      for (let i = 0; i < grid.items.length; i++) grid.items[i].length = 0;
     }
-    UI.syncModes(this);
-  }
-
-  nearestDamageable(x, y) {
-    let best = null, bd = 70 * 70;
-    for (const b of this.barricades) {
-      const d = (b.x - x) * (b.x - x) + (b.y - y) * (b.y - y);
-      if (d < bd) { bd = d; best = { obj: b, isWall: false }; }
-    }
-    for (const b of this.buildings) {
-      if (b.hp >= b.maxHp) continue;
-      const d = (b.x - x) * (b.x - x) + (b.y - y) * (b.y - y);
-      if (d < bd) { bd = d; best = { obj: b, isWall: false }; }
-    }
-    if (this.villageHp < this.villageMax && y > this.wallY - 90) best = { isWall: true };
-    return best;
-  }
-
-  pickBuilding(x, y) {
-    let best = null, bd = 40 * 40;
-    for (const b of this.buildings) {
-      const d = (b.x - x) * (b.x - x) + (b.y - y) * (b.y - y);
-      if (d < bd) { bd = d; best = b; }
-    }
-    return best;
-  }
-
-  pickBarricade(x, y) {
-    for (const b of this.barricades) {
-      if (Math.abs(b.x - x) < b.w / 2 && Math.abs(b.y - y) < 24) return b;
-    }
-    return null;
-  }
-
-  makeBuilding(type, x, y, pad) {
-    const def = TURRETS[type];
-    return {
-      type, x, y, pad, lv: 1, hp: def.hp, maxHp: def.hp, cd: rand(0, 0.3),
-      angle: -Math.PI / 2, flash: 0, flashT: 0, kills: 0, target: null, kind: def.kind,
-    };
-  }
-
-  upgradeBuilding(b) {
-    if (!b || b.lv >= TURRET_MAX_LV) return false;
-    const cost = turretUpgradeCost(b.lv);
-    if (this.gold < cost) { UI.toast('골드가 부족합니다', 'warn'); Sfx.deny(); return false; }
-    this.gold -= cost;
-    b.lv++;
-    const def = TURRETS[b.type];
-    b.maxHp = Math.round(def.hp * (1 + 0.25 * (b.lv - 1)));
-    b.hp = b.maxHp;
-    Sfx.build();
-    this.hitspark(b.x, b.y, '#ffd479', 12);
-    UI.toast(`${def.name} Lv.${b.lv}`, 'gold');
-    return true;
-  }
-
-  sellBuilding(b) {
-    if (!b) return;
-    const spent = TURRETS[b.type].cost + (b.lv - 1) * 0; // 단순 환불
-    const refund = Math.round(TURRETS[b.type].cost * turretSellRate);
-    this.gold += refund;
-    if (b.pad) b.pad.type = null;
-    const i = this.buildings.indexOf(b);
-    if (i >= 0) this.buildings.splice(i, 1);
-    this.boom(b.x, b.y, 0.25);
-    Sfx.kill(false);
-    UI.toast(`철거 · 골드 +${refund}`, 'gold');
-  }
-
-  healWall(n) {
-    const before = this.villageHp;
-    this.villageHp = Math.min(this.villageMax, this.villageHp + n);
-    const healed = Math.round(this.villageHp - before);
-    if (healed > 0) this.hitspark(this.W / 2, this.wallY - 4, '#9be8a4', 10);
-  }
-
-  repairWall() {
-    const cost = 60;
-    if (this.villageHp >= this.villageMax) { UI.toast('성벽이 온전합니다', 'warn'); return; }
-    if (this.gold < cost) { UI.toast('골드가 부족합니다', 'warn'); Sfx.deny(); return; }
-    this.gold -= cost;
-    this.healWall(this.villageMax * 0.14);
-    Sfx.build();
-    UI.toast('성벽 긴급 수리', 'gold');
-  }
-
-  /* ── waves ──────────────────────────────── */
-  startWave(manual) {
-    if (this.state !== 'playing' || this.phase !== 'prep') return;
-    this.phase = 'wave';
-    this.waveTime = 0;
-    const idx = this.waveIndex;
-    const w = WAVES[idx];
-    const comp = waveComposition(idx, this.diff);
-    const total = comp.reduce((a, c) => a + c.n, 0);
-    const dur = clamp(6 + total * 0.30, 10, 34);
-    const centers = [];
-    const cn = clamp(Math.round(total / 13), 2, 6);
-    for (let i = 0; i < cn; i++) centers.push(rand(this.W * 0.08, this.W * 0.92));
-    const q = [];
-    let acc = 0;
-    for (const c of comp) {
-      for (let i = 0; i < c.n; i++) {
-        acc++;
-        let t = (acc / total) * dur + rand(0, 0.9);
-        const cx = Math.random() < 0.72 ? pick(centers) : rand(this.W * 0.05, this.W * 0.95);
-        const x = clamp(cx + rand(-85, 85), 18, this.W - 18);
-        if (c.id === 'lord') t = 1.6;
-        q.push({ t: Math.max(0.25, t), type: c.id, x });
-      }
-    }
-    q.sort((a, b) => a.t - b.t);
-    this.spawnQueue = q;
-    this.waveTotal = total;
-    this.spawned = 0;
-    this.waveNames = comp;
-    Sfx.horn();
-    UI.banner(w.name, `WAVE ${idx + 1} · ${total}명 습격`);
-    this.shake(1.5);
-  }
-
-  spawnEnemy(type, x) {
-    const def = ENEMIES[type];
-    const hpScale = this.diff.hp * (1 + this.waveIndex * 0.085);
-    const hp = Math.round(def.hp * hpScale);
-    const e = {
-      uid: ++this._uid, type, def, x, y: -26 - rand(0, 40), r: def.r,
-      hp, maxHp: hp, t: rand(0, 10), seed: rand(0, 10), flash: 0, ox: 0, oy: 0,
-      attackT: rand(0.3, 0.9), slow: 1, burn: 0, burnT: 0, dead: false,
-      state: 'walk', anim: rand(0, 6.28), angle: Math.PI / 2,
-    };
-    if (def.boss) {
-      e.y = -60;
-      this.bossRef = e;
-      UI.showBoss(def);
-      Sfx.roar();
-      this.shake(12);
-      UI.banner('악덕 군주 출현', '모든 화력을 집중하라');
-    }
-    this.enemies.push(e);
-  }
-
-  updateSpawner(dt) {
-    if (!this.spawnQueue.length) return;
-    let guard = 12;
-    while (this.spawnQueue.length && guard-- > 0) {
-      const s = this.spawnQueue[0];
-      if (s.t > this.waveTime) break;
-      if (this.enemies.length >= 300) break;
-      this.spawnQueue.shift();
-      this.spawnEnemy(s.type, s.x);
-      this.spawned++;
-    }
-  }
-
-  waveCleared() {
-    if (this.phase !== 'wave') return false;
-    return this.spawnQueue.length === 0 && this.enemies.length === 0 && this.pendingBlasts.length === 0;
-  }
-
-  completeWave() {
-    const cleared = this.waveIndex + 1;
-    const goldR = Math.round((34 + cleared * 9) * this.diff.gold * (1 + 0.12 * Save.perkLevel('goldGain')));
-    const scrapR = Math.round((10 + cleared * 2) * (1 + 0.15 * Save.perkLevel('scrapGain')));
-    const rp = Math.max(1, Math.round(2 * this.diff.rp));
-    this.gold += goldR;
-    this.scrap += scrapR;
-    this.goldEarned += goldR;
-    this.scrapEarned += scrapR;
-    this.villageHp = Math.min(this.villageMax, this.villageHp + this.villageMax * 0.06);
-    this.runPoints += rp;
-    Save.addPoints(rp);
-    Save.recordRun(cleared, this.kills, cleared >= MAX_WAVE, this.diff.id);
-    Sfx.waveClear();
-    this.phase = 'prep';
-
-    if (cleared >= MAX_WAVE) { this.victory(); return; }
-
-    this.waveIndex++;
-    this.wave = this.waveIndex + 1;
-    this.prepTime = 24;
-    this.spawnQueue = [];
-    this.waveTotal = 0;
-    this.spawned = 0;
-    UI.banner('웨이브 클리어', `WAVE ${cleared} 격퇴 · 🪙 +${goldR} · ⚙️ +${scrapR} · 📘 +${rp}`);
-    UI.toast(`설계도 +${rp} (보유 ${Save.data.points})`, 'gold');
-  }
-
-  victory() {
-    if (this.state === 'result') return;
-    this.state = 'result';
-    this.phase = 'prep';
-    const bonus = Math.round(12 * this.diff.rp);
-    this.runPoints += bonus;
-    Save.addPoints(bonus);
-    Save.recordRun(MAX_WAVE, this.kills, true, this.diff.id);
-    Sfx.victory();
-    this.celebrate();
-    UI.showResult(this, true);
-  }
-
-  defeat() {
-    if (this.state === 'result') return;
-    this.state = 'result';
-    const reached = Math.max(1, this.waveIndex + 1);
-    const bonus = Math.round(Math.floor(reached / 3) * this.diff.rp);
-    this.runPoints += bonus;
-    Save.addPoints(bonus);
-    Save.recordRun(Math.max(0, reached - (this.phase === 'wave' ? 1 : 0)), this.kills, false, this.diff.id);
-    Sfx.defeat();
-    this.shake(20);
-    for (let i = 0; i < 9; i++) {
-      this.pendingBlasts.push({ t: 0.2 + i * 0.12, x: rand(this.W * 0.15, this.W * 0.85), y: rand(this.wallY - 100, this.wallY + 20), radius: rand(70, 130), dmg: 0, kind: 'air', silent: true });
-    }
-    UI.showResult(this, false);
-  }
-
-  celebrate() {
-    for (let i = 0; i < 40; i++) {
-      this.pendingBlasts.push({ t: i * 0.06, x: rand(this.W * 0.1, this.W * 0.9), y: rand(40, this.wallY - 60), radius: rand(20, 40), dmg: 0, kind: 'flare' });
-    }
-  }
-
-  /* ── firing ─────────────────────────────── */
-  fireIfReady() {
-    const h = this.hero;
-    if (h.cd > 0 || h.reloading) return;
-    const w = WEAPON_BY_ID[h.weaponId];
-    const st = this.stats(w);
-    if ((h.mags[h.weaponId] | 0) <= 0) { this.startReload(); return; }
-    const ang = Math.atan2(this.aimY - h.y, this.aimX - h.x);
-    h.angle = ang;
-    h.mags[h.weaponId]--;
-    h.cd = 60 / st.rpm;
-    h.flash = 0.07;
-    h.recoil = Math.min(1, h.recoil + 0.9);
-    this.shots++;
-    this.muzzle(ang, w);
-    Sfx.shot(w.sfx);
-
-    if (w.kind === 'bullet') this.fireBullets(w, st, ang);
-    else if (w.kind === 'rail') this.fireRail(w, st, ang);
-    else if (w.kind === 'flame') this.fireFlame(w, st, ang);
-    else if (w.kind === 'grenade') this.fireGrenade(w, st, ang);
-    else if (w.kind === 'missile') this.fireMissile(w, st, ang);
-
-    if ((h.mags[h.weaponId] | 0) <= 0) this.startReload();
-    this.shake(w.kind === 'bullet' ? 0.5 : 1.2);
-  }
-
-  muzzle(ang, w) {
-    const h = this.hero;
-    const mx = h.x + Math.cos(ang) * 26;
-    const my = h.y + Math.sin(ang) * 26;
-    for (let i = 0; i < 3; i++) {
-      this.particles.push({
-        x: mx, y: my, vx: Math.cos(ang + rand(-0.35, 0.35)) * rand(60, 220),
-        vy: Math.sin(ang + rand(-0.35, 0.35)) * rand(60, 220) - 20,
-        life: rand(0.05, 0.13), maxLife: 0.13, size: rand(1.5, 3.5), color: w.color, kind: 'spark', drag: 0.9,
-      });
-    }
-    this.particles.push({ x: mx, y: my, vx: Math.cos(ang) * 40, vy: Math.sin(ang) * 40, life: 0.06, maxLife: 0.06, size: 11, color: w.color, kind: 'glow', drag: 0.8 });
-    // 탄피
-    const side = ang + Math.PI / 2;
-    this.particles.push({
-      x: h.x + Math.cos(ang) * 8, y: h.y + Math.sin(ang) * 8,
-      vx: Math.cos(side) * rand(30, 70) + rand(-10, 10), vy: Math.sin(side) * rand(30, 70) - 30,
-      life: 0.8, maxLife: 0.8, size: 2.2, color: '#e8c46a', kind: 'casing', gravity: 320, drag: 0.99,
-    });
-  }
-
-  fireBullets(w, st, ang) {
-    const h = this.hero;
-    const ox = Math.cos(ang) * 28, oy = Math.sin(ang) * 28;
-    for (let i = 0; i < st.pellets; i++) {
-      const a = ang + rand(-st.spread / 2, st.spread / 2) * DEG;
-      const spd = w.speed * rand(0.95, 1.05);
-      const crit = Math.random() < (w.crit || 0.05);
-      this.bullets.push({
-        x: h.x + ox, y: h.y + oy, px: h.x + ox, py: h.y + oy,
-        vx: Math.cos(a) * spd, vy: Math.sin(a) * spd,
-        dmg: st.dmg, pierce: st.pierce, life: w.range / spd,
-        color: w.color, width: w.id === 'shotgun' ? 2 : (w.id === 'minigun' ? 1.6 : 2.4),
-        crit, hitIds: null, wtype: w.id,
-      });
-    }
-    // 샷건 사격 시 산탄 흔적
-    if (w.id === 'shotgun') {
-      for (let i = 0; i < 8; i++) {
-        this.particles.push({
-          x: h.x + ox, y: h.y + oy, vx: Math.cos(ang + rand(-0.4, 0.4)) * rand(30, 120),
-          vy: Math.sin(ang + rand(-0.4, 0.4)) * rand(30, 120), life: rand(0.12, 0.3),
-          maxLife: 0.3, size: rand(1, 2.4), color: '#ffcf8b', kind: 'spark', drag: 0.9,
-        });
-      }
-    }
-  }
-
-  fireRail(w, st, ang) {
-    const h = this.hero;
-    const len = w.range;
-    const x2 = h.x + Math.cos(ang) * len, y2 = h.y + Math.sin(ang) * len;
-    const dx = Math.cos(ang), dy = Math.sin(ang);
-    const hit = [];
-    for (const e of this.enemies) {
+    for (let i = 0; i < S.enemies.length; i++) {
+      const e = S.enemies[i];
       if (e.dead) continue;
-      const t = (e.x - h.x) * dx + (e.y - h.y) * dy;
-      if (t < 0 || t > len) continue;
-      const perp = Math.abs(-(e.x - h.x) * dy + (e.y - h.y) * dx);
-      if (perp < e.r + 9) hit.push({ e, t });
-    }
-    hit.sort((a, b) => a.t - b.t);
-    for (const { e } of hit) {
-      this.damageEnemy(e, st.dmg, { crit: Math.random() < (w.crit || 0.2), ignoreArmor: true, kx: dx * 120, ky: dy * 120, source: 'rail', heroShot: true });
-      this.hits++;
-      this.hitspark(e.x, e.y, w.color, 6);
-    }
-    this.beams.push({ x1: h.x + dx * 26, y1: h.y + dy * 26, x2, y2, life: 0.22, maxLife: 0.22, color: w.color, width: 7 });
-    this.shake(4);
-    for (let i = 0; i < 10; i++) {
-      this.particles.push({
-        x: h.x + dx * 30, y: h.y + dy * 30, vx: dx * rand(100, 400) + rand(-70, 70), vy: dy * rand(100, 400) + rand(-70, 70),
-        life: rand(0.1, 0.28), maxLife: 0.28, size: rand(1, 2.6), color: w.color, kind: 'spark', drag: 0.92,
-      });
+      const cx = clamp(Math.floor(e.x / cell), 0, grid.cols - 1);
+      const cy = clamp(Math.floor(e.y / cell), 0, grid.rows - 1);
+      grid.items[cy * grid.cols + cx].push(e);
     }
   }
 
-  fireFlame(w, st, ang) {
-    const h = this.hero;
-    const range = w.range;
-    const half = 0.22;
-    for (const e of this.enemies) {
-      if (e.dead) continue;
-      const d = Math.hypot(e.x - h.x, e.y - h.y);
-      if (d > range + e.r) continue;
-      let dAng = Math.atan2(e.y - h.y, e.x - h.x) - ang;
-      while (dAng > Math.PI) dAng -= TAU;
-      while (dAng < -Math.PI) dAng += TAU;
-      if (Math.abs(dAng) < half) {
-        this.damageEnemy(e, st.dmg, { ignoreArmor: true, source: 'flame' });
-        e.burn = 18; e.burnT = 2.2;
-      }
-    }
-    for (let i = 0; i < 4; i++) {
-      const a = ang + rand(-half, half);
-      const spd = rand(220, 460);
-      this.particles.push({
-        x: h.x + Math.cos(ang) * 26, y: h.y + Math.sin(ang) * 26,
-        vx: Math.cos(a) * spd, vy: Math.sin(a) * spd, life: rand(0.18, 0.36), maxLife: 0.36,
-        size: rand(5, 12), color: pick(['#ffdd66', '#ff9a2e', '#ff5a1e']), kind: 'fire',
-        drag: 0.86, grow: 26,
-      });
-    }
-    this.shake(0.4);
-  }
-
-  fireGrenade(w, st, ang) {
-    const h = this.hero;
-    const dist = clamp(Math.hypot(this.aimX - h.x, this.aimY - h.y), 120, w.range);
-    const tx = h.x + Math.cos(ang) * dist;
-    const ty = h.y + Math.sin(ang) * dist;
-    this.lobShell(h.x + Math.cos(ang) * 24, h.y + Math.sin(ang) * 24, tx, ty, 0.55 + dist / 2200, 'grenade', st.dmg, w.splash || 70, ang);
-  }
-
-  fireMissile(w, st, ang) {
-    let target = null, bd = 1e9;
-    const ax = this.aimX, ay = this.aimY;
-    for (const e of this.enemies) {
-      if (e.dead) continue;
-      const d = (e.x - ax) ** 2 + (e.y - ay) ** 2;
-      if (d < bd) { bd = d; target = e; }
-    }
-    const h = this.hero;
-    this.shells.push({
-      x: h.x + Math.cos(ang) * 26, y: h.y + Math.sin(ang) * 26,
-      sx: h.x, sy: h.y, tx: ax, ty: ay, t: 0, dur: 0.9,
-      kind: 'missile', dmg: st.dmg, radius: w.splash || 90, target, ang, speed: w.speed, smoke: 0,
-    });
-    this.shake(1.4);
-  }
-
-  lobShell(x, y, tx, ty, dur, kind, dmg, radius, ang) {
-    this.shells.push({
-      x, y, sx: x, sy: y, tx, ty, t: 0, dur, kind, dmg, radius, ang,
-      target: null, speed: 0, smoke: 0,
-    });
-  }
-
-  /* ── damage ─────────────────────────────── */
-  damageEnemy(e, dmg, opts) {
-    if (!e || e.dead) return;
+  /* ───────── 피해 ───────── */
+  function damageEnemy(e, dmg, opts) {
+    if (e.dead) return;
     opts = opts || {};
-    let d = dmg;
-    if (!opts.ignoreArmor && e.def.armor) d = Math.max(d * 0.18, d - e.def.armor * 0.9);
-    if (opts.crit) d *= 2.1;
-    e.hp -= d;
-    e.flash = 1;
-    this.dmgDealt += d;
-    const ang = opts.kx !== undefined ? Math.atan2(opts.ky, opts.kx) : -Math.PI / 2;
-    e.ox += (opts.kx ? opts.kx * 0.10 : rand(-4, 4));
-    e.oy += (opts.ky ? opts.ky * 0.10 : -rand(0, 4));
-    e.ox = clamp(e.ox, -16, 16); e.oy = clamp(e.oy, -22, 8);
-    if (opts.source !== 'flame') {
-      const n = opts.crit ? 7 : 4;
-      for (let i = 0; i < n; i++) {
-        this.particles.push({
-          x: e.x + rand(-4, 4), y: e.y + rand(-4, 4),
-          vx: Math.cos(ang + Math.PI + rand(-0.9, 0.9)) * rand(30, 170),
-          vy: Math.sin(ang + Math.PI + rand(-0.9, 0.9)) * rand(30, 170),
-          life: rand(0.2, 0.5), maxLife: 0.5, size: rand(1.4, 3.4),
-          color: e.def.boss ? '#ff6b6b' : '#a8232a', kind: 'blood', gravity: 240, drag: 0.98,
-        });
-      }
-      this.hero.hitMark = 0.12;
-      Sfx.impact();
+    const armor = Math.max(0, e.armor - (opts.pen || 0));
+    let eff = dmg * (25 / (25 + armor));
+    if (opts.crit) eff *= opts.critMul || 1.8;
+    e.hp -= eff;
+    e.hurt = 0.12;
+    S.totalDamage += eff;
+    if (opts.burn) { e.burnDps = Math.max(e.burnDps, opts.burn); e.burnT = Math.max(e.burnT, 2.6); }
+    if (opts.slow) { e.slowAmt = Math.max(e.slowAmt, opts.slow); e.slowT = Math.max(e.slowT, 1.8); }
+    if (opts.stun) { e.stun = Math.max(e.stun, opts.stun); }
+    if (opts.tower) opts.tower.damage += eff;
+    if ((opts.crit || eff > 60) && window.Render) {
+      window.Render.addFloater(e.x, e.y, Math.round(eff).toLocaleString('ko-KR'), !!opts.crit);
     }
-    if (d >= 1 && Save.data.settings.dmgText !== false) {
-      if (this.texts.length < 90) {
-        this.texts.push({
-          x: e.x + rand(-6, 6), y: e.y - e.r - 4,
-          vy: -42, life: opts.crit ? 0.9 : 0.6, maxLife: opts.crit ? 0.9 : 0.6,
-          text: String(Math.round(d)), color: opts.crit ? '#ffd44d' : '#e9f1fa',
-          size: opts.crit ? 16 : 12, crit: !!opts.crit,
-        });
-      }
-    }
-    if (e.hp <= 0) this.killEnemy(e, opts);
+    if (e.hp <= 0) killEnemy(e, opts);
   }
 
-  killEnemy(e, opts) {
+  function killEnemy(e, opts) {
     if (e.dead) return;
     e.dead = true;
-    this.kills++;
-    this.combo++;
-    this.comboT = 2.4;
-    const def = e.def;
-    const goldMul = this.diff.gold * (1 + 0.12 * Save.perkLevel('goldGain'));
-    const gold = Math.max(1, Math.round(def.gold * goldMul));
-    const scrapMul = (1 + 0.15 * Save.perkLevel('scrapGain'));
-    const scrap = Math.max(0, Math.round(def.scrap * scrapMul));
-    this.gold += gold;
-    this.scrap += scrap;
-    this.goldEarned += gold;
-    this.scrapEarned += scrap;
-    this.hero.killMark = 0.18;
-    if (this.texts.length < 110) {
-      this.texts.push({
-        x: e.x, y: e.y - e.r - 12, vy: -30, life: 0.75, maxLife: 0.75,
-        text: `+${gold}`, color: '#ffcf5e', size: 11, coin: true,
-      });
+    S.kills++; S.waveKills++; S.lastKillAt = S.time;
+    const gold = e.bounty * S.stats.goldMul;
+    S.gold += gold; S.totalGold += gold;
+    if (opts && opts.tower) opts.tower.kills++;
+    addParticle({ kind: 'blood', x: e.x, y: e.y, size: e.size, life: 0.6, t: 0 });
+    if (S.decals.length < 260) S.decals.push({ x: e.x, y: e.y, r: 0.22 * e.size, a: 0.55, t: 0 });
+    if (e.def.boss) {
+      addParticle({ kind: 'flash', x: e.x, y: e.y, size: 4, life: 0.5, t: 0 });
+      if (window.Render) window.Render.shake(9);
+      emit('bossDead', { x: e.x, y: e.y });
     }
-    for (let i = 0; i < 12; i++) {
-      this.particles.push({
-        x: e.x + rand(-6, 6), y: e.y + rand(-6, 6),
-        vx: rand(-180, 180), vy: rand(-200, 60), life: rand(0.25, 0.65), maxLife: 0.65,
-        size: rand(1.5, 3.8), color: e.def.boss ? '#ff5b5b' : '#8f1d24', kind: 'blood', gravity: 420, drag: 0.98,
-      });
-    }
-    for (let i = 0; i < 5; i++) {
-      this.particles.push({
-        x: e.x + rand(-8, 8), y: e.y + rand(-8, 8), vx: rand(-40, 40), vy: rand(-60, 10),
-        life: rand(0.4, 0.9), maxLife: 0.9, size: e.r * rand(0.7, 1.2), color: 'rgba(120,80,50,0.35)',
-        kind: 'smoke', drag: 0.96, grow: 18,
-      });
-    }
-    this.corpses.push({ x: e.x, y: e.y, r: e.r, type: e.type, t: 0, life: 5.5, rot: rand(-0.6, 0.6), def: e.def });
-    if (this.corpses.length > 80) this.corpses.shift();
-    this.decals.push({ x: e.x, y: e.y + 4, r: e.r * rand(0.8, 1.3), color: 'rgba(95,12,18,0.55)', life: 22, maxLife: 22, kind: 'blood' });
-    if (this.decals.length > 140) this.decals.shift();
-
-    Sfx.kill(!!def.boss);
-    if (def.boss) {
-      this.bossRef = null;
-      UI.hideBoss();
-      this.explode(e.x, e.y, 150, 0, { silent: false, friendly: false });
-      this.shake(16);
-      this.flashAlpha = 0.5;
-      this.hitstop = 0.12;
-      this.runPoints += 10;
-      Save.addPoints(10);
-      UI.banner('군주 처치', '대군의 기세가 꺾였다! 📘 +10');
-    } else if (e.type === 'siege' || e.type === 'ram' || e.type === 'knight') {
-      this.hitstop = 0.02;
-    }
-    this.comboToast();
+    rollRelic(e);
+    const idx = S.enemies.indexOf(e);
+    if (idx >= 0) { S.enemies[idx] = S.enemies[S.enemies.length - 1]; S.enemies.pop(); }
   }
 
-  comboToast() {
-    if (this.combo >= 5 && this.combo % 5 === 0) {
-      UI.combo(this.combo);
-    }
-  }
-
-  damageBuilding(b, dmg, src) {
-    if (!b) return;
-    b.hp -= dmg;
-    b.flash = 1;
-    this.hitspark(b.x, b.y, '#ff9a5a', 4);
-    if (b.hp <= 0) {
-      b.hp = 0;
-      if (b.pad) b.pad.type = null;
-      const i = this.buildings.indexOf(b);
-      if (i >= 0) this.buildings.splice(i, 1);
-      this.explode(b.x, b.y, 60, 0, { silent: false, friendly: false, small: true });
-      UI.toast(`${TURRETS[b.type].name} 파괴!`, 'warn');
-      Sfx.explosion(0.7);
-    }
-  }
-
-  damageBarricade(b, dmg) {
-    if (!b || b.hp <= 0) return;
-    b.hp -= dmg;
-    b.flash = 1;
-    this.hitspark(b.x + rand(-b.w / 2, b.w / 2), b.y, '#ffb066', 5);
-    for (let i = 0; i < 3; i++) {
-      this.particles.push({
-        x: b.x + rand(-b.w / 2, b.w / 2), y: b.y + rand(-6, 6), vx: rand(-90, 90), vy: rand(-120, 20),
-        life: rand(0.3, 0.6), maxLife: 0.6, size: rand(2, 4), color: '#8a5a2a', kind: 'debris', gravity: 520, drag: 0.99,
-      });
-    }
-    if (b.hp <= 0) {
-      const i = this.barricades.indexOf(b);
-      if (i >= 0) this.barricades.splice(i, 1);
-      this.boom(b.x, b.y, 0.5);
-      UI.toast('바리케이드 파괴!', 'warn');
-      Sfx.explosion(0.4);
-    }
-  }
-
-  damageWall(n) {
-    if (this.state !== 'playing') return;
-    this.villageHp -= n;
-    this.flashAlpha = Math.max(this.flashAlpha, Math.min(0.16, n / 3000));
-    this.shake(1.4);
-    this.hitspark(rand(this.W * 0.1, this.W * 0.9), this.wallY - 6, '#ff9a5a', 4);
-    Sfx.wallHit();
-    if (this.villageHp <= 0) { this.villageHp = 0; this.defeat(); }
-  }
-
-  /* ── enemy update ───────────────────────── */
-  blockingBarricade(e) {
-    const bs = this.barricades;
-    for (let i = 0; i < bs.length; i++) {
-      const b = bs[i];
-      if (b.hp <= 0) continue;
-      if (e.x > b.x - b.w / 2 - e.r * 0.5 && e.x < b.x + b.w / 2 + e.r * 0.5) {
-        if (e.y + e.r * 0.6 >= b.y - b.h * 0.5 && e.y < b.y + 46) return b;
+  function rollRelic(e) {
+    if (S.cheat.relicTest) { grantRandomRelic(); S.cheat.relicTest = false; return; }
+    const isBoss = !!e.def.boss;
+    const isElite = isBoss || e.def.siege || e.type === 'knight';
+    let chance = 0.00065;
+    if (e.type === 'berserker') chance *= 1.6;
+    if (isElite) chance *= 5;
+    if (isBoss) chance *= 25;
+    chance *= (S.cheat.relicBoost || 1);
+    if (Math.random() < chance) {
+      const r = grantRandomRelic(isBoss ? 'boss' : 'normal');
+      if (r) {
+        for (let i = 0; i < 18; i++) {
+          addParticle({ kind: 'relic', x: e.x + rnd(-1.2, 1.2), y: e.y + rnd(-1.2, 1.2), size: 0.6, life: 1.4 + Math.random() * 0.8, t: 0 });
+        }
+        addParticle({ kind: 'flash', x: e.x, y: e.y, size: 2.2, life: 0.5, t: 0 });
       }
     }
-    return null;
   }
 
-  updateEnemies(dt) {
-    const wallY = this.wallY;
-    for (let i = 0; i < this.enemies.length; i++) {
-      const e = this.enemies[i];
+  function grantRandomRelic(source) {
+    const owned = save.relics || {};
+    const missing = D.RELICS.filter(r => !owned[r.id]);
+    if (!missing.length) {
+      S.shards += 8; save.shards = S.shards; persist();
+      emit('relic', { dupe: true, shards: 8 });
+      return null;
+    }
+    // 등급 추첨 (보스는 상위 등급 확률 상승)
+    const weights = source === 'boss'
+      ? { common: 34, rare: 34, epic: 22, legendary: 10 }
+      : { common: 66, rare: 24, epic: 8, legendary: 2 };
+    let total = 0; for (const k in weights) total += weights[k];
+    let roll = Math.random() * total, rarity = 'common';
+    for (const k in weights) { roll -= weights[k]; if (roll <= 0) { rarity = k; break; } }
+    let cands = missing.filter(r => r.rarity === rarity);
+    if (!cands.length) cands = missing;
+    const relic = cands[Math.floor(Math.random() * cands.length)];
+    save.relics[relic.id] = 1;
+    if (!save.relicNew) save.relicNew = {};
+    save.relicNew[relic.id] = 1;
+    persist();
+    computeStats();
+    if (window.SFX) SFX.play('relic');
+    emit('relic', { relic });
+    return relic;
+  }
+
+  function addParticle(p) { if (S.particles.length < 900) S.particles.push(p); }
+
+  /* ───────── 적 업데이트 ───────── */
+  function updateEnemies(dt) {
+    const cell = grid.cell;
+    for (let i = S.enemies.length - 1; i >= 0; i--) {
+      const e = S.enemies[i];
       if (e.dead) continue;
-      e.t += dt;
-      e.flash = Math.max(0, e.flash - dt * 6);
-      e.ox *= Math.max(0, 1 - dt * 9);
-      e.oy *= Math.max(0, 1 - dt * 9);
-      e.attackT -= dt;
+      if (e.hurt > 0) e.hurt -= dt;
+      if (e.stun > 0) e.stun -= dt;
+      if (e.slowT > 0) { e.slowT -= dt; if (e.slowT <= 0) e.slowAmt = 0; }
       if (e.burnT > 0) {
         e.burnT -= dt;
-        e.hp -= e.burn * dt;
-        if (Math.random() < dt * 14) {
-          this.particles.push({ x: e.x + rand(-5, 5), y: e.y + rand(-5, 5), vx: rand(-15, 15), vy: rand(-60, -20), life: 0.4, maxLife: 0.4, size: rand(2, 5), color: pick(['#ff9a2e', '#ffd166']), kind: 'fire', drag: 0.95, grow: 14 });
-        }
-        if (e.hp <= 0) { this.killEnemy(e, {}); continue; }
+        damageEnemy(e, e.burnDps * dt, {});
+        if (e.dead) continue;
       }
-      if (e.def.boss) {
-        e.slamT = (e.slamT === undefined ? 4.5 : e.slamT) - dt;
-        if (e.slamT <= 0 && e.y > this.H * 0.42) {
-          e.slamT = 5.2;
-          this.bossSlam(e);
-        }
+      const wall = S.walls[e.side];
+      const breached = wall.hp <= 0;
+      let tx = e.tx, ty = e.ty;
+      if (breached) {
+        if (!e.inside) { e.inside = true; }
+        const target = enemyInnerTarget(e);
+        tx = target.x; ty = target.y;
+        e.innerTarget = target;
       }
+      let dx = tx - e.x, dy = ty - e.y;
+      let d = Math.sqrt(dx * dx + dy * dy) || 1;
 
-      const def = e.def;
-      const bar = this.blockingBarricade(e);
-      if (bar) {
-        e.state = 'attackBar';
-        e.angle = Math.PI / 2;
-        if (e.attackT <= 0) {
-          e.attackT = def.interval;
-          this.damageBarricade(bar, def.dmg * (def.siege ? 2.2 : 1));
-          this.lunge(e);
-        }
-        continue;
-      }
-      if (def.kind === 'archer') {
-        const distToWall = wallY - e.y;
-        if (distToWall > def.range) {
-          e.y += def.speed * dt;
-          e.x += Math.sin(e.t * 1.6 + e.seed) * 9 * dt;
-        } else {
-          e.state = 'shoot';
-          if (e.attackT <= 0) {
-            e.attackT = def.interval;
-            this.archerShoot(e);
+      // 원거리 유닛: 정지 거리
+      const stopAt = e.ranged ? Math.max(1.1, e.rangeStop || 0) * 0.9 : 0.35;
+      const arrived = d <= Math.max(0.35, stopAt);
+      const wallDist = e.side === 'N' ? e.y - D.VILLAGE.y0
+        : e.side === 'S' ? D.VILLAGE.y1 - e.y
+        : e.side === 'W' ? e.x - D.VILLAGE.x0
+        : D.VILLAGE.x1 - e.x;
+      const atWall = !breached && wallDist > -0.5 && wallDist < 0.85;
+
+      if (!arrived && !atWall) {
+        e.state = 'march';
+        let spd = e.speed * (S.enraged ? 1.35 : 1) * (e.stun > 0 ? 0 : (1 - e.slowAmt));
+        // 분리(무리 밀집) — 주변 셀만 샘플링
+        let sx = 0, sy = 0;
+        const cx = clamp(Math.floor(e.x / cell), 0, grid.cols - 1);
+        const cy = clamp(Math.floor(e.y / cell), 0, grid.rows - 1);
+        for (let oy = -1; oy <= 1; oy++) {
+          for (let ox = -1; ox <= 1; ox++) {
+            const arr = grid.items[(cy + oy) * grid.cols + (cx + ox)];
+            if (!arr) continue;
+            for (let j = 0; j < arr.length; j++) {
+              const o = arr[j];
+              if (o === e || o.dead) continue;
+              const ddx = e.x - o.x, ddy = e.y - o.y;
+              const dd = ddx * ddx + ddy * ddy;
+              const min = (e.size + o.size) * 0.42;
+              if (dd < min * min && dd > 0.0001) {
+                const inv = 1 / Math.sqrt(dd);
+                sx += ddx * inv; sy += ddy * inv;
+              }
+            }
           }
         }
-        continue;
-      }
-      if (e.y + e.r >= wallY - 12) {
-        e.state = 'attackWall';
-        e.y = Math.min(e.y, wallY - e.r - 8);
-        e.angle = Math.PI / 2;
-        if (e.attackT <= 0) {
-          e.attackT = def.interval;
-          this.damageWall(def.dmg);
-          this.lunge(e);
-        }
+        let mx = dx / d, my = dy / d;
+        mx += sx * 0.22 + Math.cos(e.anim + S.time * 2.2) * 0.06;
+        my += sy * 0.22 + Math.sin(e.anim + S.time * 2.2) * 0.06;
+        const ml = Math.hypot(mx, my) || 1;
+        e.x += (mx / ml) * spd * dt;
+        e.y += (my / ml) * spd * dt;
+        e.walk += spd * dt * 3.4;
+        e.flip = mx >= 0 ? 1 : -1;
+        e.state = 'march';
+        // 성벽에 닿았는지
+        if (!breached && d < 0.9 && !e.ranged) { e.state = 'attack'; }
       } else {
-        e.state = 'walk';
-        e.y += def.speed * dt;
-        e.x += Math.sin(e.t * 1.3 + e.seed) * 7 * dt;
-        e.angle = Math.PI / 2;
-      }
-      // 사망 정리
-    }
-    if (this.enemies.some(e => e.dead)) {
-      this.enemies = this.enemies.filter(e => !e.dead);
-    }
-    if (this.bossRef && this.bossRef.dead) this.bossRef = null;
-  }
-
-  lunge(e) {
-    e.ox += rand(-2, 2);
-    e.oy -= 5;
-    if (e.def.siege || e.def.boss) this.shake(e.def.boss ? 4 : 2);
-  }
-
-  bossSlam(e) {
-    this.shake(11);
-    this.flashAlpha = 0.16;
-    Sfx.explosion(1.4);
-    this.pendingBlasts.push({ t: 0.01, x: e.x, y: e.y + 26, radius: 140, dmg: 0, kind: 'slam', silent: false });
-    for (const b of this.barricades.slice()) {
-      if (Math.hypot(b.x - e.x, b.y - e.y) < 180) this.damageBarricade(b, 130);
-    }
-    for (const b of this.buildings.slice()) {
-      if (Math.hypot(b.x - e.x, b.y - e.y) < 160) this.damageBuilding(b, 70);
-    }
-    for (let i = 0; i < 22; i++) {
-      this.particles.push({
-        x: e.x + rand(-40, 40), y: e.y + 20, vx: rand(-260, 260), vy: rand(-180, 40),
-        life: rand(0.4, 0.9), maxLife: 0.9, size: rand(2, 6), color: '#ffb066', kind: 'debris', gravity: 460, drag: 0.98,
-      });
-    }
-  }
-
-  archerShoot(e) {
-    let target = null, tType = 'wall';
-    let bd = 1e9;
-    const maxD = 300;
-    for (const b of this.buildings) {
-      const d = Math.hypot(b.x - e.x, b.y - e.y);
-      if (d < maxD && d < bd) { bd = d; target = b; tType = 'building'; }
-    }
-    let tx, ty;
-    if (target) { tx = target.x; ty = target.y; }
-    else { tx = clamp(e.x + rand(-60, 60), 20, this.W - 20); ty = this.wallY - 6; }
-    const dur = 0.55 + Math.hypot(tx - e.x, ty - e.y) / 900;
-    this.arrows.push({
-      x: e.x, y: e.y, sx: e.x, sy: e.y, tx, ty, t: 0, dur,
-      dmg: e.def.dmg * 3, target, tType, ang: Math.atan2(ty - e.y, tx - e.x),
-    });
-    Sfx.shot('pistol');
-  }
-
-  /* ── projectiles ────────────────────────── */
-  updateBullets(dt) {
-    const enemies = this.enemies;
-    for (let i = this.bullets.length - 1; i >= 0; i--) {
-      const b = this.bullets[i];
-      b.px = b.x; b.py = b.y;
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
-      b.life -= dt;
-      let dead = false;
-      if (b.life <= 0 || b.x < -40 || b.x > this.W + 40 || b.y < -80 || b.y > this.H + 20) dead = true;
-      if (!dead) {
-        for (let j = 0; j < enemies.length; j++) {
-          const e = enemies[j];
-          if (e.dead) continue;
-          if (Math.abs(e.y - b.y) > e.r + 26 && Math.abs(e.x - b.x) > 60) continue;
-          if (b.hitIds && b.hitIds.indexOf(e.uid) >= 0) continue;
-          if (segCircle(b.px, b.py, b.x, b.y, e.x, e.y, e.r + 2)) {
-            this.damageEnemy(e, b.dmg, { crit: b.crit, kx: b.vx * 0.08, ky: b.vy * 0.08, source: b.wtype, heroShot: true });
-            this.hits++;
-            this.hitspark(b.x, b.y, b.color, 3);
-            if (b.pierce > 0) {
-              b.pierce--;
-              if (!b.hitIds) b.hitIds = [];
-              b.hitIds.push(e.uid);
-              b.dmg *= 0.86;
-            } else { dead = true; break; }
+        e.state = 'attack';
+        e.walk += dt * 1.2;
+        if (e.ranged && !breached) {
+          // 원거리: 성벽 또는 포탑 저격
+          e.atkCd -= dt;
+          if (e.atkCd <= 0) {
+            e.atkCd = e.interval;
+            const tw = nearestTower(e.x, e.y, e.ranged + 1.5);
+            if (tw && Math.random() < 0.55) {
+              damageTower(tw, e.dmg * 1.1);
+              addParticle({ kind: 'spark', x: tw.x, y: tw.y, size: 0.5, life: 0.4, t: 0 });
+            } else if (!breached) {
+              damageWall(e.side, e.dmg * (e.def.siege ? 1.0 : 0.42), e.x, e.y);
+            }
+          }
+        } else if (!breached) {
+          e.atkCd -= dt;
+          if (e.atkCd <= 0) {
+            e.atkCd = e.interval;
+            damageWall(e.side, e.dmg * (e.def.siege ? 1.3 : 0.46), e.x, e.y);
+            if (e.type === 'siege' && Math.random() < 0.25) {
+              // 공성탑은 농민병을 쏟아낸다
+              const ee = spawnEnemy('peasant', e.side, Math.random());
+              if (ee) { ee.x = e.x; ee.y = e.y; ee.tx = e.x + rnd(-1, 1); ee.ty = e.y + 1; }
+            }
+          }
+        } else {
+          // 성벽 붕괴 → 내부 시설 공격
+          e.atkCd -= dt;
+          if (e.atkCd <= 0) {
+            e.atkCd = e.interval;
+            const t = e.innerTarget || enemyInnerTarget(e);
+            if (t && t.kind === 'tower') damageTower(t.ref, e.dmg);
+            else if (t && t.kind === 'building') damageBuilding(t.ref, e.dmg);
+            else damageKeep(e.dmg);
           }
         }
       }
-      if (dead) this.bullets.splice(i, 1);
-    }
-
-    // 적 화살
-    for (let i = this.arrows.length - 1; i >= 0; i--) {
-      const a = this.arrows[i];
-      a.t += dt;
-      if (a.t >= a.dur) {
-        if (a.tType === 'building' && a.target && this.buildings.indexOf(a.target) >= 0) this.damageBuilding(a.target, a.dmg);
-        else this.damageWall(a.dmg);
-        this.hitspark(a.tx, a.ty, '#e7d5a0', 4);
-        this.arrows.splice(i, 1);
-      }
     }
   }
 
-  updateShells(dt) {
-    for (let i = this.shells.length - 1; i >= 0; i--) {
-      const s = this.shells[i];
-      s.t += dt;
-      const k = Math.min(1, s.t / s.dur);
-      if (s.kind === 'missile' && s.target && !s.target.dead) {
-        s.tx = s.target.x; s.ty = s.target.y;
-      }
-      s.x = lerp(s.sx, s.tx, k);
-      s.y = lerp(s.sy, s.ty, k);
-      s.smoke += dt;
-      if (s.smoke > 0.035) {
-        s.smoke = 0;
-        this.particles.push({
-          x: s.x, y: s.y, vx: rand(-20, 20), vy: rand(-30, 10), life: rand(0.3, 0.7), maxLife: 0.7,
-          size: rand(3, 7), color: 'rgba(180,180,180,0.30)', kind: 'smoke', drag: 0.95, grow: 26,
-        });
-      }
-      if (k >= 1) {
-        const friendly = s.kind === 'grenade' || s.kind === 'missile' || s.kind === 'mortar';
-        this.explode(s.tx, s.ty, s.radius, s.dmg, { friendly });
-        this.shells.splice(i, 1);
-      }
+  function nearestTower(x, y, range) {
+    let best = null, bd = range * range;
+    for (const t of S.towers) {
+      const d = dist2(x, y, t.x, t.y);
+      if (d < bd) { bd = d; best = t; }
     }
-    for (let i = this.pendingBlasts.length - 1; i >= 0; i--) {
-      const p = this.pendingBlasts[i];
-      p.t -= dt;
-      if (p.t <= 0) {
-        if (p.kind === 'flare') {
-          this.particles.push({ x: p.x, y: p.y, vx: rand(-90, 90), vy: rand(-140, -30), life: rand(0.6, 1.2), maxLife: 1.2, size: rand(2, 4), color: pick(['#ffd166', '#ff7b54', '#7fe7ff']), kind: 'spark', gravity: 90, drag: 0.99 });
-        } else {
-          this.explode(p.x, p.y, p.radius, p.dmg, { silent: true, quiet: p.kind === 'slam' });
-        }
-        this.pendingBlasts.splice(i, 1);
-      }
+    return best;
+  }
+
+  function enemyInnerTarget(e) {
+    // 가장 가까운 내부 시설/포탑/keep
+    let best = null, bd = 1e9;
+    for (const b of S.buildings) {
+      if (!b.alive) continue;
+      const d = dist2(e.x, e.y, b.x, b.y) - (b.keep ? 4 : 0);
+      if (d < bd) { bd = d; best = { kind: 'building', ref: b, x: b.x, y: b.y + (b.keep ? 1.4 : 0) }; }
+    }
+    for (const t of S.towers) {
+      const d = dist2(e.x, e.y, t.x, t.y);
+      if (d < bd) { bd = d; best = { kind: 'tower', ref: t, x: t.x, y: t.y + 0.3 }; }
+    }
+    return best || { kind: 'keep', x: 23, y: 23 };
+  }
+
+  function damageWall(side, amount, x, y) {
+    if (S.cheat.invincible) return;
+    const w = S.walls[side];
+    if (!w || w.hp <= 0) return;
+    w.hp -= amount;
+    S.damageTakenThisWave += amount;
+    if (w.hp < 0) w.hp = 0;
+    if (Math.random() < 0.25) addParticle({ kind: 'spark', x: x || 23, y: y || 17, size: 0.4, life: 0.35, t: 0 });
+    if (w.hp <= 0) {
+      if (window.SFX) SFX.play('breach');
+      if (window.Render) window.Render.shake(8);
+      emit('wallBreach', { side });
+      for (let i = 0; i < 20; i++) addParticle({ kind: 'debris', x: 23 + rnd(-6, 6), y: 17 + rnd(-2, 2), size: 0.5, life: 1, t: 0 });
+    }
+  }
+  function damageKeep(amount) {
+    if (S.cheat.invincible) return;
+    S.keepHp -= amount;
+    S.damageTakenThisWave += amount;
+    if (S.keepHp <= 0) { S.keepHp = 0; defeat(); }
+  }
+  function damageBuilding(b, amount) {
+    if (S.cheat.invincible) return;
+    b.hp -= amount;
+    if (b.hp <= 0 && b.alive) {
+      b.alive = false; b.hp = 0;
+      addParticle({ kind: 'debris', x: b.x, y: b.y, size: 1, life: 1.2, t: 0 });
+      emit('buildingDown', b);
+    }
+  }
+  function damageTower(t, amount) {
+    if (S.cheat.invincible) return;
+    t.hp -= amount;
+    if (t.hp <= 0) {
+      const idx = S.towers.indexOf(t);
+      if (idx >= 0) S.towers.splice(idx, 1);
+      const pad = S.pads[t.pad]; if (pad) pad.tower = null;
+      for (let i = 0; i < 10; i++) addParticle({ kind: 'debris', x: t.x, y: t.y, size: 0.6, life: 0.9, t: 0 });
+      emit('towerDestroyed', t);
     }
   }
 
-  explode(x, y, radius, dmg, opts) {
-    opts = opts || {};
-    const friendly = opts.friendly !== false;
-    if (friendly && dmg > 0) {
-      for (const e of this.enemies) {
-        if (e.dead) continue;
-        const d = Math.hypot(e.x - x, e.y - y);
-        if (d < radius + e.r) {
-          const fall = 1 - Math.pow(clamp(d / (radius + e.r), 0, 1), 1.4) * 0.6;
-          const ang = Math.atan2(e.y - y, e.x - x);
-          this.damageEnemy(e, dmg * fall, {
-            ignoreArmor: true, kx: Math.cos(ang) * 220, ky: Math.sin(ang) * 220,
-            source: 'explosion', crit: false,
-          });
-        }
-      }
-    }
-    // 시각 효과
-    const size = clamp(radius / 80, 0.6, 1.9);
-    this.particles.push({ x, y, vx: 0, vy: 0, life: 0.18, maxLife: 0.18, size: radius * 0.55, color: '#fff2c4', kind: 'glow' });
-    this.particles.push({ x, y, vx: 0, vy: 0, life: 0.34, maxLife: 0.34, size: 8, color: '#ffd479', kind: 'ring', grow: radius * 1.5, width: 4 });
-    for (let i = 0; i < Math.round(14 * size); i++) {
-      const a = rand(0, TAU), sp = rand(60, 380) * size;
-      this.particles.push({
-        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40,
-        life: rand(0.25, 0.7), maxLife: 0.7, size: rand(1.5, 4) * size,
-        color: pick(['#ffdf7e', '#ff9a2e', '#ff5a1e', '#ffffff']), kind: 'spark', gravity: 260, drag: 0.93,
-      });
-    }
-    for (let i = 0; i < Math.round(8 * size); i++) {
-      this.particles.push({
-        x: x + rand(-radius * 0.4, radius * 0.4), y: y + rand(-radius * 0.3, radius * 0.3),
-        vx: rand(-50, 50), vy: rand(-90, -10), life: rand(0.5, 1.2), maxLife: 1.2,
-        size: rand(6, 16) * size, color: 'rgba(90,90,95,0.34)', kind: 'smoke', drag: 0.96, grow: 40,
-      });
-    }
-    for (let i = 0; i < Math.round(6 * size); i++) {
-      this.particles.push({
-        x, y, vx: rand(-200, 200), vy: rand(-260, -40), life: rand(0.5, 1.1), maxLife: 1.1,
-        size: rand(2, 5), color: '#6b5a45', kind: 'debris', gravity: 620, drag: 0.99,
-      });
-    }
-    this.decals.push({ x, y, r: radius * 0.55, color: 'rgba(20,14,10,0.5)', life: 30, maxLife: 30, kind: 'scorch' });
-    this.shake(6 * size);
-    this.flashAlpha = Math.max(this.flashAlpha, 0.18 * size);
-    if (!opts.silent) Sfx.explosion(size);
-    if (size > 1.2) this.hitstop = 0.03;
+  function defeat() {
+    if (S.phase === 'defeat') return;
+    S.phase = 'defeat';
+    save.bestWave = Math.max(save.bestWave || 0, S.globalWave);
+    persist();
+    if (window.SFX) SFX.play('defeat');
+    emit('defeat', { wave: S.globalWave, stage: S.stage, kills: S.kills });
+    saveRun();
   }
 
-  /* ── hero ───────────────────────────────── */
-  updateHero(dt) {
-    const h = this.hero;
-    // 이동
-    let dir = 0;
-    if (this.keys['a'] || this.keys['arrowleft']) dir -= 1;
-    if (this.keys['d'] || this.keys['arrowright']) dir += 1;
-    dir += this.touchMove;
-    if (dir !== 0) h.x = clamp(h.x + dir * 310 * dt, 40, this.W - 40);
-    if (dir !== 0) h.moveAnim = (h.moveAnim || 0) + dt * 9;
-
-    // 자동 조준
-    if (this.autoAim && this.enemies.length) {
-      let target = null, best = -1e9;
-      for (const e of this.enemies) {
-        if (e.dead) continue;
-        const score = e.y * 2 - Math.abs(e.x - h.x) * 0.35;
-        if (score > best) { best = score; target = e; }
+  /* ───────── 포탑 업데이트 ───────── */
+  const qbuf = [];
+  function updateTowers(dt) {
+    for (const t of S.towers) {
+      const s = towerStats(t);
+      const def = s.def;
+      t.cd -= dt;
+      if (t.recoil > 0) t.recoil = Math.max(0, t.recoil - dt * 6);
+      // 표적 선택
+      let target = t.target;
+      if (!target || target.dead || dist2(target.x, target.y, t.x, t.y) > s.range * s.range) {
+        target = pickTarget(t, s);
+        t.target = target;
       }
       if (target) {
-        this.aimX = target.x;
-        this.aimY = target.y;
-        this.firing = true;
-      } else { this.firing = false; }
-    } else if (this.autoAim) {
-      this.firing = false;
-    }
-    h.aimX = this.aimX; h.aimY = this.aimY;
-    h.angle = Math.atan2(this.aimY - h.y, this.aimX - h.x);
-    h.flash = Math.max(0, h.flash - dt * 12);
-    h.recoil = Math.max(0, h.recoil - dt * 9);
-    h.hitMark = Math.max(0, h.hitMark - dt * 7);
-    h.killMark = Math.max(0, h.killMark - dt * 5);
-    h.cd -= dt;
-
-    if (h.reloading) {
-      h.reloadT -= dt;
-      if (h.reloadT <= 0) {
-        h.reloading = false;
-        h.mags[h.weaponId] = WEAPON_BY_ID[h.weaponId].mag;
-        Sfx.ui();
+        const ang = Math.atan2(target.y - t.y, target.x - t.x);
+        let da = ang - t.angle;
+        while (da > Math.PI) da -= Math.PI * 2;
+        while (da < -Math.PI) da += Math.PI * 2;
+        t.angle += clamp(da, -8 * dt, 8 * dt);
       }
-    }
-    if (this.firing && !this.autoAim) {
-      if (h.cd <= 0 && !h.reloading) this.fireIfReady();
-    } else if (this.autoAim && this.firing) {
-      if (h.cd <= 0 && !h.reloading) this.fireIfReady();
-    }
-    // 스킬 쿨다운
-    for (const k in this.skills) {
-      const s = this.skills[k];
-      if (s.cd > 0) s.cd = Math.max(0, s.cd - dt);
-    }
-  }
-
-  /* ── structures ─────────────────────────── */
-  updateBuildings(dt) {
-    const perkDmg = 1 + 0.12 * Save.perkLevel('turretDmg');
-    for (let i = this.buildings.length - 1; i >= 0; i--) {
-      const b = this.buildings[i];
-      const def = TURRETS[b.type];
-      b.flash = Math.max(0, b.flash - dt * 6);
-      b.cd -= dt;
-      const dmgMul = perkDmg * (1 + 0.2 * (b.lv - 1));
-      const range = def.range * (1 + 0.05 * (b.lv - 1));
-
-      if (b.type === 'flame') {
-        let target = null, bd = 1e9;
-        for (const e of this.enemies) {
-          if (e.dead) continue;
-          const d = Math.hypot(e.x - b.x, e.y - b.y);
-          if (d < range && d < bd) { bd = d; target = e; }
-        }
-        if (target) {
-          b.angle = Math.atan2(target.y - b.y, target.x - b.x);
-          if (b.cd <= 0) {
-            b.cd = def.interval;
-            const half = 0.3;
-            for (const e of this.enemies) {
-              if (e.dead) continue;
-              const d = Math.hypot(e.x - b.x, e.y - b.y);
-              if (d > range + e.r) continue;
-              let da = Math.atan2(e.y - b.y, e.x - b.x) - b.angle;
-              while (da > Math.PI) da -= TAU;
-              while (da < -Math.PI) da += TAU;
-              if (Math.abs(da) < half) { this.damageEnemy(e, def.dmg * dmgMul, { ignoreArmor: true, source: 'flame' }); e.burn = 10; e.burnT = 1.6; }
-            }
-            b.flash = 1; b.flashT = 0.06;
-            for (let n = 0; n < 3; n++) {
-              const a = b.angle + rand(-0.28, 0.28);
-              this.particles.push({
-                x: b.x + Math.cos(b.angle) * 14, y: b.y + Math.sin(b.angle) * 14,
-                vx: Math.cos(a) * rand(150, 260), vy: Math.sin(a) * rand(150, 260),
-                life: rand(0.2, 0.34), maxLife: 0.34, size: rand(4, 8), color: pick(['#ffd166', '#ff8a3d', '#ff5a1e']), kind: 'fire', drag: 0.87, grow: 22,
-              });
-            }
-            Sfx.shot('flame');
-          }
-        }
+      if (t.cd > 0 || !target) {
+        if (def.proj === 'beam' && target) fireTower(t, s, target, dt);
         continue;
       }
+      t.cd = 1 / s.rate;
+      t.recoil = 1;
+      fireTower(t, s, target, dt);
+    }
+  }
 
-      // 표적 선택 (성벽에 가까운 순)
-      let target = null, bestScore = -1e9;
-      for (const e of this.enemies) {
-        if (e.dead) continue;
-        const d = Math.hypot(e.x - b.x, e.y - b.y);
-        if (d > range) continue;
-        const score = e.y - d * 0.15;
-        if (score > bestScore) { bestScore = score; target = e; }
-      }
-      b.target = target;
-      if (!target) continue;
-      b.angle = Math.atan2(target.y - b.y, target.x - b.x);
-      if (b.cd > 0) continue;
-      b.cd = def.interval;
-      b.flash = 1; b.flashT = 0.08;
-      if (b.type === 'sentry') {
-        const dmg = def.dmg * dmgMul;
-        this.damageEnemy(target, dmg, { source: 'sentry', kx: Math.cos(b.angle) * 30, ky: Math.sin(b.angle) * 30 });
-        this.beams.push({ x1: b.x + Math.cos(b.angle) * 16, y1: b.y + Math.sin(b.angle) * 16, x2: target.x, y2: target.y, life: 0.07, maxLife: 0.07, color: '#ffe6a6', width: 2 });
-        this.particles.push({ x: b.x + Math.cos(b.angle) * 18, y: b.y + Math.sin(b.angle) * 18, vx: Math.cos(b.angle) * 60, vy: Math.sin(b.angle) * 60, life: 0.07, maxLife: 0.07, size: 8, color: '#ffcf5e', kind: 'glow', drag: 0.8 });
-        this.hitspark(target.x, target.y, '#ffd479', 2);
-        Sfx.shot('rifle');
-        this.hero.hitMark = Math.max(this.hero.hitMark, 0.02);
-      } else if (b.type === 'mortar') {
-        this.shells.push({
-          x: b.x + Math.cos(b.angle) * 12, y: b.y + Math.sin(b.angle) * 12,
-          sx: b.x, sy: b.y, tx: target.x + rand(-14, 14), ty: target.y + rand(-10, 10),
-          t: 0, dur: 0.75, kind: 'mortar', dmg: def.dmg * dmgMul, radius: def.splash || 70, ang: b.angle, speed: 0, smoke: 0,
-        });
-        Sfx.shot('thump');
-        this.muzzle(b.angle, { color: '#ffc65e' });
-      } else if (b.type === 'rail') {
-        const ang = b.angle;
-        const x2 = b.x + Math.cos(ang) * range, y2 = b.y + Math.sin(ang) * range;
-        let hit = [];
-        for (const e of this.enemies) {
-          if (e.dead) continue;
-          const t = (e.x - b.x) * Math.cos(ang) + (e.y - b.y) * Math.sin(ang);
-          if (t < 0 || t > range) continue;
-          const perp = Math.abs(-(e.x - b.x) * Math.sin(ang) + (e.y - b.y) * Math.cos(ang));
-          if (perp < e.r + 8) hit.push(e);
+  function pickTarget(t, s) {
+    const cands = enemiesInRadius(t.x, t.y, s.range, qbuf);
+    if (!cands.length) return null;
+    let best = null, bs = -1e9;
+    for (const e of cands) {
+      let sc = 100 - Math.hypot(e.x - t.x, e.y - t.y);
+      if (e.def.boss) sc += 30;
+      if (e.def.siege) sc += 6;
+      sc += (1 - e.hp / e.hpMax) * 8;
+      if (sc > bs) { bs = sc; best = e; }
+    }
+    return best;
+  }
+
+  function fireTower(t, s, target, dt) {
+    const def = s.def;
+    if (window.SFX) SFX.play(def.sound || 'mg');
+    if (window.Render) window.Render.shake(def.proj === 'shell' ? 1.2 : def.sound === 'cannon' ? 2.2 : 0);
+    const crit = Math.random() < s.crit;
+    const ang = Math.atan2(target.y - t.y, target.x - t.x);
+    switch (def.proj) {
+      case 'bullet': {
+        const shots = 1 + (Math.random() < S.stats.doubleShot ? 1 : 0);
+        for (let i = 0; i < shots; i++) {
+          const spread = (def.spread || 0.04) * (Math.random() - 0.5) * 2;
+          const dist = Math.hypot(target.x - t.x, target.y - t.y);
+          S.projectiles.push({
+            kind: 'bullet', x: t.x, y: t.y - 0.5,
+            vx: Math.cos(ang + spread) * 38, vy: Math.sin(ang + spread) * 38,
+            dmg: s.dmg, life: Math.min(0.9, dist / 38 + 0.12),
+            pen: s.armorPen + (def.armorPen ? 0 : 0), burn: s.burn, crit, critMul: s.critMul,
+            pierce: s.pierce, hits: 0, tower: t, trail: 0.035, slow: s.slow, color: '#ffe6a3',
+          });
         }
-        for (const e of hit) this.damageEnemy(e, def.dmg * dmgMul, { ignoreArmor: true, source: 'rail', kx: Math.cos(ang) * 80, ky: Math.sin(ang) * 80 });
-        this.beams.push({ x1: b.x + Math.cos(ang) * 14, y1: b.y + Math.sin(ang) * 14, x2, y2, life: 0.16, maxLife: 0.16, color: '#8ce8ff', width: 5 });
-        Sfx.shot('rail');
-        this.shake(1.5);
+        addParticle({ kind: 'muzzle', x: t.x + Math.cos(ang) * 0.45, y: t.y - 0.55 + Math.sin(ang) * 0.28, size: 0.35, life: 0.08, t: 0, ang });
+        break;
+      }
+      case 'shell': case 'grenade': {
+        const salvo = def.proj === 'grenade' ? (Math.random() < S.stats.doubleShot ? 2 : 1) : 1;
+        for (let i = 0; i < salvo; i++) {
+          S.projectiles.push({
+            kind: 'shell', x: t.x, y: t.y - 0.4,
+            sx: t.x, sy: t.y - 0.4, tx: target.x + rnd(-0.35, 0.35), ty: target.y + rnd(-0.35, 0.35),
+            t: 0, dur: 0.65 + Math.random() * 0.1, dmg: s.dmg, aoe: s.aoe, pen: s.armorPen,
+            crit, critMul: s.critMul, burn: s.burn, tower: t, color: def.proj === 'grenade' ? '#ffd06a' : '#ffb35c',
+            arcH: def.proj === 'grenade' ? 1.4 : 2.4, chain: S.stats.chain,
+          });
+        }
+        addParticle({ kind: 'muzzle', x: t.x + Math.cos(ang) * 0.4, y: t.y - 0.7, size: 0.5, life: 0.12, t: 0, ang });
+        break;
+      }
+      case 'rocket': {
+        for (let i = 0; i < s.salvo; i++) {
+          const cands = enemiesInRadius(t.x, t.y, s.range, qbuf);
+          const tg = cands.length ? cands[Math.floor(Math.random() * cands.length)] : target;
+          if (!tg) continue;
+          S.projectiles.push({
+            kind: 'rocket', x: t.x + rnd(-0.4, 0.4), y: t.y - 0.8, tx: tg.x, ty: tg.y,
+            target: tg, spd: 12, dmg: s.dmg, aoe: s.aoe, pen: s.armorPen, crit: false,
+            critMul: s.critMul, burn: s.burn, tower: t, life: 3, angle: ang,
+          });
+        }
+        break;
+      }
+      case 'flame': {
+        const range = s.range, spread = 0.5;
+        const cands = enemiesInRadius(t.x, t.y, range + 0.6, qbuf);
+        for (const e of cands) {
+          const ea = Math.atan2(e.y - t.y, e.x - t.x);
+          let da = Math.abs(ea - ang);
+          while (da > Math.PI) da = Math.abs(da - Math.PI * 2);
+          if (da <= spread) {
+            damageEnemy(e, s.dmg * (1 - Math.hypot(e.x - t.x, e.y - t.y) / (range * 1.35)), {
+              pen: s.armorPen, burn: s.burn, slow: s.slow, tower: t,
+            });
+          }
+        }
+        addParticle({ kind: 'flame', x: t.x + Math.cos(ang) * 0.5, y: t.y - 0.55, size: 1, life: 0.3, t: 0, ang, range, cryo: !!def.freeze });
+        break;
+      }
+      case 'beam': {
+        // 지속 광선: 틱마다 피해, 램프업
+        t.ramp = Math.min(2.4, (t.ramp || 0) + dt * 1.6);
+        damageEnemy(target, s.dmg * dt * t.ramp, { pen: s.armorPen, burn: s.burn, tower: t, crit: false });
+        t.beamTime = 0.1;
+        t.beamTarget = target;
+        break;
+      }
+      case 'rail': {
+        const dx = target.x - t.x, dy = target.y - t.y;
+        const L = Math.hypot(dx, dy) || 1;
+        const ux = dx / L, uy = dy / L;
+        const hits = [];
+        for (const e of S.enemies) {
+          if (e.dead) continue;
+          const px = e.x - t.x, py = e.y - t.y;
+          const proj = px * ux + py * uy;
+          if (proj < 0 || proj > s.range * 1.2) continue;
+          const perp = Math.abs(px * uy - py * ux);
+          if (perp < 0.45 + e.size * 0.3) hits.push({ e, proj });
+        }
+        hits.sort((a, b) => a.proj - b.proj);
+        for (const h of hits) damageEnemy(h.e, s.dmg, { pen: s.armorPen, burn: s.burn, crit: Math.random() < s.crit, critMul: s.critMul, tower: t });
+        S.projectiles.push({ kind: 'rail', x: t.x, y: t.y - 0.7, x2: t.x + ux * s.range * 1.2, y2: t.y - 0.7 + uy * s.range * 1.2, life: 0.28, t: 0, tower: t });
+        addParticle({ kind: 'muzzle', x: t.x + ux * 0.5, y: t.y - 0.7 + uy * 0.3, size: 0.9, life: 0.18, t: 0, ang });
+        break;
+      }
+      case 'chain': {
+        let cur = target;
+        let dmg = s.dmg;
+        const hit = new Set();
+        let px = t.x, py = t.y - 0.7;
+        for (let i = 0; i < s.chains; i++) {
+          if (!cur) break;
+          hit.add(cur);
+          damageEnemy(cur, dmg, { pen: s.armorPen, burn: s.burn, tower: t, crit: false });
+          S.projectiles.push({ kind: 'arc', x: px, y: py, x2: cur.x, y2: cur.y - 0.4, life: 0.18, t: 0 });
+          px = cur.x; py = cur.y - 0.4;
+          dmg *= 0.82;
+          let next = null, bd = 3.2 * 3.2;
+          for (const e of S.enemies) {
+            if (e.dead || hit.has(e)) continue;
+            const d = dist2(px, py, e.x, e.y);
+            if (d < bd) { bd = d; next = e; }
+          }
+          cur = next;
+        }
+        break;
+      }
+      case 'pulse': {
+        const cands = enemiesInRadius(t.x, t.y, s.range, qbuf);
+        for (const e of cands) {
+          damageEnemy(e, s.dmg, { pen: s.armorPen, slow: s.slow, stun: (def.stun || 0) * (e.def.boss ? 0.25 : 1), tower: t });
+        }
+        S.projectiles.push({ kind: 'ring', x: t.x, y: t.y, r: 0, maxR: s.range, life: 0.55, t: 0, color: '#8fe8ff' });
+        break;
       }
     }
   }
 
-  /* ── effects / misc ─────────────────────── */
-  updateParticles(dt) {
-    const ps = this.particles;
-    for (let i = ps.length - 1; i >= 0; i--) {
-      const p = ps[i];
-      p.life -= dt;
-      if (p.life <= 0) { ps.splice(i, 1); continue; }
-      p.x += p.vx * dt;
-      p.y += p.vy * dt;
-      if (p.gravity) p.vy += p.gravity * dt;
-      if (p.drag) { const d = Math.pow(p.drag, dt * 60); p.vx *= d; p.vy *= d; }
-    }
-    if (ps.length > 800) ps.splice(0, ps.length - 800);
-    for (let i = this.texts.length - 1; i >= 0; i--) {
-      const t = this.texts[i];
-      t.life -= dt;
-      t.y += t.vy * dt;
-      t.vy *= 0.94;
-      if (t.life <= 0) this.texts.splice(i, 1);
-    }
-    for (let i = this.beams.length - 1; i >= 0; i--) {
-      this.beams[i].life -= dt;
-      if (this.beams[i].life <= 0) this.beams.splice(i, 1);
-    }
-    for (let i = this.decals.length - 1; i >= 0; i--) {
-      this.decals[i].life -= dt;
-      if (this.decals[i].life <= 0) this.decals.splice(i, 1);
-    }
-    for (let i = this.corpses.length - 1; i >= 0; i--) {
-      const c = this.corpses[i];
-      c.t += dt;
-      if (c.t > c.life) this.corpses.splice(i, 1);
-    }
-  }
-
-  updateAmbient(dt) {
-    this.shakeAmt *= Math.max(0, 1 - dt * 8);
-    this.flashAlpha *= Math.max(0, 1 - dt * 9);
-    this.ambientT = (this.ambientT || 0) + dt;
-    if (this.ambientT > 0.22) {
-      this.ambientT = 0;
-      // 재와 불씨
-      if (this.particles.length < 620) {
-        this.particles.push({
-          x: rand(0, this.W), y: rand(this.H * 0.55, this.H),
-          vx: rand(-8, 14), vy: rand(-26, -10), life: rand(1.6, 3.4), maxLife: 3.4,
-          size: rand(0.7, 1.8), color: Math.random() < 0.5 ? 'rgba(255,150,60,0.5)' : 'rgba(200,200,200,0.18)',
-          kind: 'ember', drag: 1,
-        });
+  /* ───────── 발사체 ───────── */
+  function updateProjectiles(dt) {
+    for (let i = S.projectiles.length - 1; i >= 0; i--) {
+      const p = S.projectiles[i];
+      p.t = (p.t || 0) + dt;
+      let remove = false;
+      if (p.kind === 'bullet') {
+        const ox = p.x, oy = p.y;
+        p.x += p.vx * dt; p.y += p.vy * dt;
+        const dx = p.x - ox, dy = p.y - oy;
+        const seg = Math.hypot(dx, dy);
+        if (p.t > p.life) { remove = true; }
+        else {
+          // 이동 구간 전체와 충돌 검사(고속·배속에서도 탄환 관통 판정)
+          const cands = enemiesInRadius((ox + p.x) / 2, (oy + p.y) / 2, seg / 2 + 0.6, qbuf);
+          let best = null, bestT = 1e9;
+          for (const e of cands) {
+            const ex = e.x - ox, ey = e.y - oy;
+            const L2 = dx * dx + dy * dy || 1;
+            const t = Math.max(0, Math.min(1, (ex * dx + ey * dy) / L2));
+            const px = ox + dx * t, py = oy + dy * t;
+            const dd = (e.x - px) ** 2 + (e.y - py) ** 2;
+            const rr = (0.4 + e.size * 0.35) ** 2;
+            if (dd <= rr && t < bestT) { bestT = t; best = e; }
+          }
+          if (best) {
+            damageEnemy(best, p.dmg, { pen: p.pen, burn: p.burn, crit: p.crit, critMul: p.critMul, slow: p.slow, tower: p.tower });
+            if (p.pierce > 0) { p.pierce--; } else { remove = true; }
+          }
+        }
+      } else if (p.kind === 'shell') {
+        const k = Math.min(1, p.t / p.dur);
+        p.x = lerp(p.sx, p.tx, k); p.y = lerp(p.sy, p.ty, k);
+        if (k >= 1) {
+          explode(p.x, p.y, p.aoe, p.dmg, p.pen, p.burn, p.tower, p.chain, p.crit, p.critMul);
+          remove = true;
+        }
+      } else if (p.kind === 'rocket') {
+        const tg = p.target;
+        if (tg && !tg.dead) { p.tx = tg.x; p.ty = tg.y; }
+        const ang = Math.atan2(p.ty - p.y, p.tx - p.x);
+        p.angle = ang;
+        p.x += Math.cos(ang) * p.spd * dt; p.y += Math.sin(ang) * p.spd * dt;
+        if (dist2(p.x, p.y, p.tx, p.ty) < 0.35 * 0.35 || p.t >= p.life) {
+          explode(p.x, p.y, p.aoe, p.dmg, p.pen, p.burn, p.tower, 0, false, p.critMul);
+          remove = true;
+        }
+        if (Math.random() < 0.4) addParticle({ kind: 'smoke', x: p.x, y: p.y, size: 0.14, life: 0.35, t: 0 });
+      } else {
+        if (p.t >= p.life) remove = true;
       }
-      // 마을 연기
-      if (this.decor && this.decor.torches.length) {
-        const t = pick(this.decor.torches);
-        this.particles.push({ x: t.x + rand(-10, 10), y: t.y - 16, vx: rand(-6, 6), vy: rand(-26, -12), life: rand(1.2, 2.2), maxLife: 2.2, size: rand(3, 6), color: 'rgba(160,160,165,0.16)', kind: 'smoke', drag: 0.99, grow: 20 });
+      if (remove) { S.projectiles.splice(i, 1); }
+    }
+  }
+
+  function explode(x, y, aoe, dmg, pen, burn, tower, chain, crit, critMul) {
+    const cands = enemiesInRadius(x, y, aoe, qbuf);
+    for (const e of cands) {
+      const d = Math.hypot(e.x - x, e.y - y);
+      const falloff = 1 - 0.45 * Math.min(1, d / Math.max(0.1, aoe));
+      damageEnemy(e, dmg * falloff, { pen, burn, tower, crit, critMul, slow: 0 });
+    }
+    addParticle({ kind: 'explosion', x, y, size: aoe, life: 0.45, t: 0 });
+    addParticle({ kind: 'flash', x, y, size: aoe * 1.2, life: 0.18, t: 0 });
+    if (chain > 0) {
+      // 연쇄 폭발: 주변에 작은 2차 폭발
+      for (let c = 0; c < chain; c++) {
+        const ox = x + rnd(-aoe, aoe) * 1.2, oy = y + rnd(-aoe, aoe) * 1.2;
+        const sub = enemiesInRadius(ox, oy, aoe * 0.55, qbuf);
+        for (const e of sub) damageEnemy(e, dmg * 0.35, { pen, burn, tower });
+        addParticle({ kind: 'explosion', x: ox, y: oy, size: aoe * 0.5, life: 0.3, t: 0 });
       }
     }
   }
 
-  hitspark(x, y, color, n) {
-    for (let i = 0; i < n; i++) {
-      const a = rand(0, TAU), sp = rand(40, 200);
-      this.particles.push({
-        x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: rand(0.12, 0.32), maxLife: 0.32,
-        size: rand(1, 2.4), color: color || '#ffd479', kind: 'spark', gravity: 140, drag: 0.94,
-      });
+  /* ───────── 파티클 ───────── */
+  function updateParticles(dt) {
+    for (let i = S.particles.length - 1; i >= 0; i--) {
+      const p = S.particles[i];
+      p.t += dt;
+      if (p.kind === 'smoke') { p.x += rnd(-0.2, 0.2) * dt; p.y -= dt * 0.5; }
+      if (p.kind === 'debris') { p.vy = (p.vy || 0) + dt * 3; p.x += (p.vx || 0) * dt; p.y += p.vy * dt * 0.35; }
+      if (p.t >= p.life) S.particles.splice(i, 1);
+    }
+    for (let i = S.decals.length - 1; i >= 0; i--) {
+      S.decals[i].t += dt;
+      if (S.decals[i].t > 90) S.decals.splice(i, 1);
     }
   }
 
-  boom(x, y, size) {
-    this.particles.push({ x, y, vx: 0, vy: 0, life: 0.28, maxLife: 0.28, size: 10, color: '#ffd479', kind: 'ring', grow: 80 * size, width: 3 });
-    for (let i = 0; i < 10; i++) {
-      this.particles.push({ x, y, vx: rand(-120, 120), vy: rand(-140, 20), life: rand(0.25, 0.55), maxLife: 0.55, size: rand(1.5, 3), color: 'rgba(200,190,170,0.5)', kind: 'dust', gravity: 200, drag: 0.95 });
+  /* ───────── 메인 업데이트 ───────── */
+  let runSaveTimer = 0;
+  function update(realDt) {
+    if (S.phase === 'lobby' || S.phase === 'paused') return;
+    if (S.phase === 'stageclear' || S.phase === 'defeat') { updateParticles(realDt); return; }
+    const speed = S.speed;
+    const total = realDt * speed;
+    const steps = clamp(Math.ceil(total / 0.034), 1, 7);
+    const dt = total / steps;
+    for (let i = 0; i < steps; i++) {
+      S.time += dt;
+      if (S.phase === 'prep') {
+        S.prepLeft -= dt;
+        if (S.prepLeft <= 0) startWave();
+      } else if (S.phase === 'wave') {
+        spawnFromQueue(dt);
+      }
+      if (S.phase === 'wave' || S.phase === 'prep') {
+        rebuildGrid();
+        updateEnemies(dt);
+        updateTowers(dt);
+        updateProjectiles(dt);
+      }
+      if (S.phase === 'wave' && !S.enraged && S.enemies.length > 0 &&
+          S.waveTimer > 30 && S.time - S.lastKillAt > 26) {
+        S.enraged = true;
+        emit('toast', '적들이 광폭화했습니다! 성벽이 위험합니다.');
+        emit('enrage');
+      }
+      updateParticles(dt);
     }
+    waveCompleteCheck();
+    runSaveTimer += realDt;
+    if (runSaveTimer > 6) { runSaveTimer = 0; saveRun(); }
   }
 
-  shake(n) {
-    if (!Save.data.settings.shake) return;
-    this.shakeAmt = Math.min(26, Math.max(this.shakeAmt, n));
+  /* ───────── 편의 ───────── */
+  function setSpeed(v) { S.speed = v; }
+  function togglePause() { S.paused = !S.paused; }
+  function repairWallCost() { return Math.round((140 + 22 * Math.max(1, S.globalWave)) * (1 + (1 - wallRatio()) * 1.5)); }
+  function wallRatio() {
+    let hp = 0, mx = 0;
+    for (const id in S.walls) { hp += S.walls[id].hp; mx += S.walls[id].max; }
+    return mx ? hp / mx : 0;
+  }
+  function repairWalls() {
+    const cost = repairWallCost();
+    if (S.gold < cost) return false;
+    S.gold -= cost;
+    for (const id in S.walls) {
+      const w = S.walls[id];
+      w.hp = Math.min(w.max, w.hp + w.max * 0.22);
+    }
+    S.keepHp = Math.min(S.keepMax, S.keepHp + S.keepMax * 0.08);
+    emit('toast', '성벽을 긴급 수리했습니다.');
+    return true;
+  }
+  function repairKeepCost() { return Math.round(200 + 30 * Math.max(1, S.globalWave)); }
+  function repairKeep() {
+    const cost = repairKeepCost();
+    if (S.gold < cost) return false;
+    S.gold -= cost;
+    S.keepHp = Math.min(S.keepMax, S.keepHp + S.keepMax * 0.3);
+    return true;
   }
 
-  /* ── master update ──────────────────────── */
-  update(dt) {
-    this.time += dt;
-    this.updateAmbient(dt);
-    this.updateParticles(dt);
-    this.updateHero(dt);
-    this.updateBuildings(dt);
-    this.updateEnemies(dt);
-    this.updateBullets(dt);
-    this.updateShells(dt);
-    if (this.phase === 'prep') {
-      this.prepTime -= dt;
-      if (this.prepTime <= 0) this.startWave();
-    } else if (this.phase === 'wave') {
-      this.waveTime += dt;
-      this.updateSpawner(dt);
-      if (this.waveCleared()) this.completeWave();
-    }
-    if (this.comboT > 0) {
-      this.comboT -= dt;
-      if (this.comboT <= 0) this.combo = 0;
-    }
-    if (this.bossRef && this.bossRef.dead) this.bossRef = null;
+  /* ───────── 치트 ───────── */
+  const cheat = {
+    gold(v) { S.gold = Math.max(0, v); },
+    addGold(v) { S.gold = Math.max(0, S.gold + v); },
+    rp(v) { S.rp = Math.max(0, v); },
+    addRp(v) { S.rp = Math.max(0, S.rp + v); },
+    shards(v) { S.shards = Math.max(0, v); save.shards = S.shards; persist(); },
+    addShards(v) { S.shards = Math.max(0, S.shards + v); save.shards = S.shards; persist(); },
+    waveJump(n) {
+      S.wi = clamp(S.wi + n, 1, D.WAVES_PER_STAGE);
+      S.globalWave = (S.stage - 1) * D.WAVES_PER_STAGE + S.wi;
+      S.enemies.length = 0; S.projectiles.length = 0; S.spawnCursor = 0;
+      S.phase = 'prep'; startPrep(true); saveRun();
+    },
+    stageJump(n) {
+      S.stage = clamp(S.stage + n, 1, 30);
+      S.wi = 1; S.globalWave = (S.stage - 1) * D.WAVES_PER_STAGE + 1;
+      S.enemies.length = 0; S.projectiles.length = 0;
+      S.phase = 'prep'; startPrep(true); saveRun();
+    },
+    killAll() {
+      for (const e of S.enemies.slice()) { e.hp = 0; killEnemy(e, { tower: null }); }
+      S.enemies.length = 0;
+    },
+    win() {
+      if (S.phase === 'prep') startWave();
+      this.killAll();
+      S.spawnQueue.length = 0;
+      S.spawnCursor = 0;
+      S.waveEnded = false;
+    },
+    invincible(v) { S.cheat.invincible = !!v; },
+    relicBoost(v) { S.cheat.relicBoost = v; },
+    giveRelic(id) {
+      const r = D.RELIC_BY_ID[id];
+      if (!r) return false;
+      save.relics[id] = 1; persist(); computeStats();
+      emit('relic', { relic: r });
+      return true;
+    },
+    giveAllRelics() {
+      D.RELICS.forEach(r => { save.relics[r.id] = 1; });
+      persist(); computeStats(); emit('relicAll');
+    },
+    clearRelics() { save.relics = {}; persist(); computeStats(); },
+    unlockAllResearch() {
+      D.TECHS.forEach(t => { save.research[t.id] = t.max; });
+      computeStats(); saveRun(); emit('towerChange');
+    },
+    clearResearch() { save.research = {}; computeStats(); emit('towerChange'); },
+    resetSave() { localStorage.removeItem(SAVE_KEY); location.reload(); },
+  };
+
+  /* ───────── 초기화 ───────── */
+  function init() {
+    loadSave();
+    computeStats();
+    // 로비 배경용 마을
+    makeWalls(true);
+    S.keepMax = keepMax();
+    S.keepHp = S.keepMax;
+    buildPads();
+    buildBuildings();
+    buildProps();
+    S.stage = 1; S.wi = 1; S.globalWave = 0;
+    S.gold = 0;
   }
 
-  frame(dt) {
-    if (this.state === 'playing' && !this.paused && !this.modalOpen) {
-      let d = dt;
-      if (this.hitstop > 0) { this.hitstop -= dt; d = dt * 0.22; }
-      for (let i = 0; i < this.speed; i++) this.update(d);
-    } else if (this.state === 'menu') {
-      this.menuT += dt;
-      this.time += dt * 0.6;
-      this.updateAmbient(dt);
-      this.updateParticles(dt);
-      this.hero.angle = -Math.PI / 2 + Math.sin(this.menuT * 0.4) * 0.25;
-      this.hero.aimX = this.hero.x;
-      this.hero.aimY = this.hero.y - 100;
-    } else if (this.state === 'result') {
-      this.updateAmbient(dt);
-      this.updateParticles(dt);
-      this.updateShells(dt);
-      this.updateEnemies(dt);
-      if (this.phase === 'prep') this.hero.angle = -Math.PI / 2;
-    }
-    Render.frame(this);
-    UI.sync(this);
-  }
-
-  megaBlast(x, y) { this.explode(x, y, 120, 0); }
-}
-Game.prototype._uid = 0;
+  return {
+    S, on, emit, init, save: save, get saveData() { return save; },
+    startRun, continueRun, startWave, startPrep, nextStage,
+    computeStats, towerStats, towerDps, towerCost, placeTower, upgradeTower, sellTower,
+    prestigeGain, canPrestige, doPrestige,
+    update, setSpeed, togglePause,
+    repairWalls, repairKeep, repairWallCost, repairKeepCost, wallRatio,
+    cheat, persist, saveRun, grantRandomRelic,
+    getSpawnPool() { return pool; },
+    D,
+  };
+})();
