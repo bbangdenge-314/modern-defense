@@ -857,7 +857,7 @@ window.UI = (function () {
     refreshModalPause();
     el.techModal.classList.remove('hidden');
     buildTechTree();
-    el.techScroll.scrollTop = 0; el.techScroll.scrollLeft = window.innerWidth < 720 ? 0 : 4 * 176;
+    el.techScroll.scrollTop = 0; el.techScroll.scrollLeft = 0;
     SFX.play('click');
   }
   function openPrestige() {
