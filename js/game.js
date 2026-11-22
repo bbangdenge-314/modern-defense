@@ -94,7 +94,10 @@ window.Game = (function () {
     for (const k in eff) {
       const v = eff[k] * lv;
       if (k === 'unlock') continue;
-      if (k === 'startGold' || k === 'startRP' || k === 'armorPen' || k === 'burn' ||
+      if (k === 'dmgMul' || k === 'rateMul' || k === 'rangeMul' || k === 'aoeMul' ||
+          k === 'goldMul' || k === 'rpMul' || k === 'shardMul' || k === 'keepHpMul' ||
+          k === 'wallHpMul' || k === 'buildCostMul' ||
+          k === 'startGold' || k === 'startRP' || k === 'armorPen' || k === 'burn' ||
           k === 'pierce' || k === 'chain' || k === 'slots' || k === 'freeTower' ||
           k === 'crit' || k === 'keepResearch' || k === 'doubleShot' || k === 'slowHit' ||
           k === 'repair') st[k] += v;
@@ -518,7 +521,7 @@ window.Game = (function () {
       pierce: (def.pierce || 0) + st.pierce,
       chains: (def.chains || 0) + Math.floor(st.chain),
       salvo: def.salvo || 1,
-      crit: st.crit, critMul: st.critMul,
+      crit: Math.min(0.75, st.crit), critMul: st.critMul,
       slow: (def.slow || 0) + (st.slowHit || 0),
     };
   }
